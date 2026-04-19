@@ -108,6 +108,18 @@ pub const Message = union(enum) {
     /// Selected search index change
     search_selected: ?usize,
 
+    /// A tmux MVP target surface is ready to receive snapshot bytes.
+    tmux_mvp_target_ready: struct {
+        pane_id: usize,
+        target: *Surface,
+    },
+
+    /// A tmux MVP target surface has closed.
+    tmux_mvp_target_closed: struct {
+        pane_id: usize,
+        target: *Surface,
+    },
+
     pub const ReportTitleStyle = enum {
         csi_21_t,
 
@@ -159,6 +171,52 @@ pub const NewSurfaceContext = enum(c_int) {
     window = 0,
     tab = 1,
     split = 2,
+};
+
+/// Backend to use for a newly created surface.
+pub const SurfaceConfigBackend = enum(c_int) {
+    exec = 0,
+    tmux = 1,
+};
+
+/// Platform-specific fields for embedding APIs. The concrete runtime will
+/// reinterpret these pointers as needed.
+pub const SurfaceConfigPlatform = extern union {
+    macos: extern struct {
+        nsview: ?*anyopaque,
+    },
+
+    ios: extern struct {
+        uiview: ?*anyopaque,
+    },
+};
+
+/// Extra environment variables for surface creation.
+pub const SurfaceConfigEnvVar = extern struct {
+    key: [*:0]const u8,
+    value: [*:0]const u8,
+};
+
+/// Common ABI-stable surface configuration used both by the embedding API
+/// and action payloads that request a new surface with explicit options.
+pub const SurfaceConfig = extern struct {
+    platform_tag: c_int = 0,
+    platform: SurfaceConfigPlatform = undefined,
+    userdata: ?*anyopaque = null,
+    scale_factor: f64 = 1,
+    font_size: f32 = 0,
+    working_directory: ?[*:0]const u8 = null,
+    command: ?[*:0]const u8 = null,
+    env_vars: ?[*]SurfaceConfigEnvVar = null,
+    env_var_count: usize = 0,
+    initial_input: ?[*:0]const u8 = null,
+    wait_after_command: bool = false,
+    context: NewSurfaceContext = .window,
+    backend: SurfaceConfigBackend = .exec,
+    tmux_mvp_source_surface: ?*anyopaque = null,
+    tmux_mvp_pane_id: usize = 0,
+    tmux_mvp_cols: usize = 0,
+    tmux_mvp_rows: usize = 0,
 };
 
 pub fn shouldInheritWorkingDirectory(context: NewSurfaceContext, config: *const Config) bool {

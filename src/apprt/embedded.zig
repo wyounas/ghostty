@@ -397,13 +397,7 @@ pub const PlatformTag = enum(c_int) {
     ios = 2,
 };
 
-pub const EnvVar = extern struct {
-    /// The name of the environment variable.
-    key: [*:0]const u8,
-
-    /// The value of the environment variable.
-    value: [*:0]const u8,
-};
+pub const EnvVar = apprt.surface.SurfaceConfigEnvVar;
 
 pub const Surface = struct {
     app: *App,
@@ -420,52 +414,12 @@ pub const Surface = struct {
     title: ?[:0]const u8 = null,
 
     /// Surface initialization options.
-    pub const Options = extern struct {
-        /// The platform that this surface is being initialized for and
-        /// the associated platform-specific configuration.
-        platform_tag: c_int = 0,
-        platform: Platform.C = undefined,
-
-        /// Userdata passed to some of the callbacks.
-        userdata: ?*anyopaque = null,
-
-        /// The scale factor of the screen.
-        scale_factor: f64 = 1,
-
-        /// The font size to inherit. If 0, default font size will be used.
-        font_size: f32 = 0,
-
-        /// The working directory to load into.
-        working_directory: ?[*:0]const u8 = null,
-
-        /// The command to run in the new surface. If this is set then
-        /// the "wait-after-command" option is also automatically set to true,
-        /// since this is used for scripting.
-        ///
-        /// This command always run in a shell (e.g. via `/bin/sh -c`),
-        /// despite Ghostty allowing directly executed commands via config.
-        /// This is a legacy thing and we should probably change it in the
-        /// future once we have a concrete use case.
-        command: ?[*:0]const u8 = null,
-
-        /// Extra environment variables to set for the surface.
-        env_vars: ?[*]EnvVar = null,
-        env_var_count: usize = 0,
-
-        /// Input to send to the command after it is started.
-        initial_input: ?[*:0]const u8 = null,
-
-        /// Wait after the command exits
-        wait_after_command: bool = false,
-
-        /// Context for the new surface
-        context: apprt.surface.NewSurfaceContext = .window,
-    };
+    pub const Options = apprt.surface.SurfaceConfig;
 
     pub fn init(self: *Surface, app: *App, opts: Options) !void {
         self.* = .{
             .app = app,
-            .platform = try .init(opts.platform_tag, opts.platform),
+            .platform = try .init(opts.platform_tag, @bitCast(opts.platform)),
             .userdata = opts.userdata,
             .core_surface = undefined,
             .content_scale = .{
@@ -573,16 +527,56 @@ pub const Surface = struct {
             config.@"wait-after-command" = true;
         }
 
+        if (opts.backend == .tmux) {
+            config.@"window-width" = @intCast(opts.tmux_mvp_cols);
+            config.@"window-height" = @intCast(opts.tmux_mvp_rows);
+        }
+
         // Initialize our surface right away. We're given a view that is
         // ready to use.
+        const core_backend: CoreSurface.InitBackend = switch (opts.backend) {
+            .exec => .exec,
+            .tmux => .{
+                .tmux_mvp = .{
+                    .source_surface = @as(
+                        *Surface,
+                        @ptrCast(@alignCast(opts.tmux_mvp_source_surface.?)),
+                    ).core(),
+                    .pane_id = opts.tmux_mvp_pane_id,
+                },
+            },
+        };
+
         try self.core_surface.init(
             app.core_app.alloc,
             &config,
             app.core_app,
             app,
             self,
+            core_backend,
         );
         errdefer self.core_surface.deinit();
+
+        if (opts.backend == .tmux) {
+            const source = @as(
+                *Surface,
+                @ptrCast(@alignCast(
+                    opts.tmux_mvp_source_surface orelse return error.InvalidSurface,
+                )),
+            );
+            const app_mailbox: CoreApp.Mailbox = .{ .rt_app = app, .mailbox = &app.core_app.mailbox };
+            _ = app_mailbox.push(.{
+                .surface_message = .{
+                    .surface = source.core(),
+                    .message = .{
+                        .tmux_mvp_target_ready = .{
+                            .pane_id = opts.tmux_mvp_pane_id,
+                            .target = &self.core_surface,
+                        },
+                    },
+                },
+            }, .{ .instant = {} });
+        }
 
         // If our options requested a specific font-size, set that.
         if (opts.font_size != 0) {
@@ -928,7 +922,7 @@ pub const Surface = struct {
         };
     }
 
-    pub fn newSurfaceOptions(self: *const Surface, context: apprt.surface.NewSurfaceContext) apprt.Surface.Options {
+    pub fn newSurfaceOptions(self: *const Surface, context: apprt.surface.NewSurfaceContext) apprt.surface.SurfaceConfig {
         const font_size: f32 = font_size: {
             if (!self.app.config.@"window-inherit-font-size") break :font_size 0;
             break :font_size self.core_surface.font_size.points;
@@ -945,6 +939,7 @@ pub const Surface = struct {
             .font_size = font_size,
             .working_directory = working_directory,
             .context = context,
+            .backend = .exec,
         };
     }
 
@@ -1533,14 +1528,14 @@ pub const CAPI = struct {
     }
 
     /// Returns initial surface options.
-    export fn ghostty_surface_config_new() apprt.Surface.Options {
+    export fn ghostty_surface_config_new() apprt.surface.SurfaceConfig {
         return .{};
     }
 
     /// Create a new surface as part of an app.
     export fn ghostty_surface_new(
         app: *App,
-        opts: *const apprt.Surface.Options,
+        opts: *const apprt.surface.SurfaceConfig,
     ) ?*Surface {
         return surface_new_(app, opts) catch |err| {
             log.err("error initializing surface err={}", .{err});
@@ -1550,7 +1545,7 @@ pub const CAPI = struct {
 
     fn surface_new_(
         app: *App,
-        opts: *const apprt.Surface.Options,
+        opts: *const apprt.surface.SurfaceConfig,
     ) !*Surface {
         return try app.newSurface(opts.*);
     }

@@ -343,6 +343,9 @@ pub const Action = union(Key) {
     /// otherwise the terminal-set title.
     copy_title_to_clipboard,
 
+    /// Open a new window using an explicit surface configuration.
+    new_window_with_surface_config: apprt.surface.SurfaceConfig,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -410,6 +413,7 @@ pub const Action = union(Key) {
         search_selected,
         readonly,
         copy_title_to_clipboard,
+        new_window_with_surface_config,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -454,11 +458,7 @@ pub const Action = union(Key) {
         // For ABI compatibility, we expect that this is our union size.
         // At the time of writing, we don't promise ABI compatibility
         // so we can change this but I want to be aware of it.
-        assert(@sizeOf(CValue) == switch (@sizeOf(usize)) {
-            4 => 16,
-            8 => 24,
-            else => unreachable,
-        });
+        assert(@sizeOf(CValue) == @sizeOf(apprt.surface.SurfaceConfig));
     }
 
     /// Returns the value type for the given key.

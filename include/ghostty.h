@@ -437,6 +437,11 @@ typedef enum {
   GHOSTTY_SURFACE_CONTEXT_SPLIT = 2,
 } ghostty_surface_context_e;
 
+typedef enum {
+  GHOSTTY_SURFACE_CONFIG_BACKEND_EXEC = 0,
+  GHOSTTY_SURFACE_CONFIG_BACKEND_TMUX = 1,
+} ghostty_surface_config_backend_e;
+
 typedef struct {
   ghostty_platform_e platform_tag;
   ghostty_platform_u platform;
@@ -450,6 +455,11 @@ typedef struct {
   const char* initial_input;
   bool wait_after_command;
   ghostty_surface_context_e context;
+  ghostty_surface_config_backend_e backend;
+  ghostty_surface_t tmux_mvp_source_surface;
+  size_t tmux_mvp_pane_id;
+  size_t tmux_mvp_cols;
+  size_t tmux_mvp_rows;
 } ghostty_surface_config_s;
 
 typedef struct {
@@ -921,6 +931,7 @@ typedef enum {
   GHOSTTY_ACTION_SEARCH_SELECTED,
   GHOSTTY_ACTION_READONLY,
   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
+  GHOSTTY_ACTION_NEW_WINDOW_WITH_SURFACE_CONFIG,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -962,6 +973,7 @@ typedef union {
   ghostty_action_search_total_s search_total;
   ghostty_action_search_selected_s search_selected;
   ghostty_action_readonly_e readonly;
+  ghostty_surface_config_s new_window_with_surface_config;
 } ghostty_action_u;
 
 typedef struct {

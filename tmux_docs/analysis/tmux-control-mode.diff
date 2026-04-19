@@ -1,0 +1,277 @@
+diff --git a/src/terminal/Parser.zig b/src/terminal/Parser.zig
+index 88e7edf7c..31b7dd35e 100644
+--- a/src/terminal/Parser.zig
++++ b/src/terminal/Parser.zig
+@@ -296,6 +296,13 @@ pub fn next(self: *Parser, c: u8) [3]?Action {
+                     self.params[self.params_idx] = self.param_acc;
+                     self.params_idx += 1;
+                 }
++                // === BEGIN MVP LOG ===
++                log.info("[terminal/Parser.zig] [GHY:VT:DCS] dcs_passthrough_entry params={any} final=0x{x:0>2}('{c}')", .{
++                    self.params[0..self.params_idx],
++                    c,
++                    if (c >= 0x20 and c < 0x7f) c else '.',
++                });
++                // === END MVP LOG ===
+                 break :dcs_hook .{
+                     .dcs_hook = .{
+                         .intermediates = self.intermediates[0..self.intermediates_idx],
+diff --git a/src/terminal/dcs.zig b/src/terminal/dcs.zig
+index 425325d4a..1e76bd0e6 100644
+--- a/src/terminal/dcs.zig
++++ b/src/terminal/dcs.zig
+@@ -60,6 +60,12 @@ pub const Handler = struct {
+                     // Tmux control mode must start with ESC P 1000 p
+                     if (dcs.params.len != 1 or dcs.params[0] != 1000) break :tmux null;
+ 
++                    // === BEGIN MVP LOG ===
++                    log.info("[terminal/dcs.zig] [GHY:DCS:HOOK] tmux_control_mode_detected params={any} final='{c}'", .{
++                        dcs.params,
++                        dcs.final,
++                    });
++                    // === END MVP LOG ===
+                     break :tmux .{
+                         .state = .{
+                             .tmux = .{
+@@ -128,9 +134,11 @@ pub const Handler = struct {
+             => {},
+ 
+             .tmux => |*tmux| if (comptime build_options.tmux_control_mode) {
+-                return .{
+-                    .tmux = (try tmux.put(byte)) orelse return null,
+-                };
++                const notif = (try tmux.put(byte)) orelse return null;
++                // === BEGIN MVP LOG ===
++                log.info("[terminal/dcs.zig] [GHY:DCS:PUT] tmux_parser_emitted notification={s}", .{@tagName(notif)});
++                // === END MVP LOG ===
++                return .{ .tmux = notif };
+             } else unreachable,
+ 
+             .xtgettcap => |*list| {
+@@ -166,6 +174,9 @@ pub const Handler = struct {
+             => null,
+ 
+             .tmux => if (comptime build_options.tmux_control_mode) tmux: {
++                // === BEGIN MVP LOG ===
++                log.info("[terminal/dcs.zig] [GHY:DCS:HOOK] tmux_control_mode_exited", .{});
++                // === END MVP LOG ===
+                 self.state.deinit();
+                 break :tmux .{ .tmux = .exit };
+             } else unreachable,
+diff --git a/src/terminal/tmux/control.zig b/src/terminal/tmux/control.zig
+index 3b94eb16b..6bf4bf792 100644
+--- a/src/terminal/tmux/control.zig
++++ b/src/terminal/tmux/control.zig
+@@ -69,6 +69,9 @@ pub const Parser = struct {
+         if (self.state == .broken) return null;
+ 
+         if (self.buffer.written().len >= self.max_bytes) {
++            // === BEGIN MVP LOG ===
++            log.info("[terminal/tmux/control.zig] [INV:FAIL] tmux parser buffer exceeded max_bytes={d}", .{self.max_bytes});
++            // === END MVP LOG ===
+             self.broken();
+             return error.OutOfMemory;
+         }
+@@ -126,6 +129,9 @@ pub const Parser = struct {
+                     // Important: do not clear buffer since the notification
+                     // contains it.
+                     self.state = .idle;
++                    // === BEGIN MVP LOG ===
++                    log.info("[terminal/tmux/control.zig] [GHY:TMUX:PARSE] block_complete state_transition block->idle output_len={d}", .{output.len});
++                    // === END MVP LOG ===
+                     switch (terminator) {
+                         .end => return .{ .block_end = output },
+                         .err => {
+@@ -209,6 +215,9 @@ pub const Parser = struct {
+             // and want to accumulate the data.
+             self.state = .block;
+             self.buffer.clearRetainingCapacity();
++            // === BEGIN MVP LOG ===
++            log.info("[terminal/tmux/control.zig] [GHY:TMUX:PARSE] state_transition notification->block (%begin received)", .{});
++            // === END MVP LOG ===
+             return null;
+         } else if (std.mem.eql(u8, cmd, "%output")) cmd: {
+             var re = oni.Regex.init(
+diff --git a/src/terminal/tmux/viewer.zig b/src/terminal/tmux/viewer.zig
+index 585c95403..369bbada8 100644
+--- a/src/terminal/tmux/viewer.zig
++++ b/src/terminal/tmux/viewer.zig
+@@ -359,6 +359,9 @@ pub const Viewer = struct {
+             // queue the notification, then do notificatins.
+             .block_end, .block_err => {
+                 self.state = .startup_session;
++                // === BEGIN MVP LOG ===
++                log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] state_transition startup_block->startup_session", .{});
++                // === END MVP LOG ===
+                 return &.{};
+             },
+ 
+@@ -382,6 +385,12 @@ pub const Viewer = struct {
+ 
+             .session_changed => |info| {
+                 self.session_id = info.id;
++                // === BEGIN MVP LOG ===
++                log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] session_changed received session_id={d} name=\"{s}\"", .{
++                    info.id,
++                    info.name,
++                });
++                // === END MVP LOG ===
+ 
+                 var arena = self.action_arena.promote(self.alloc);
+                 defer self.action_arena = arena.state;
+@@ -793,6 +802,13 @@ pub const Viewer = struct {
+         const arena_alloc = arena.allocator();
+ 
+         // Process our command
++        // === BEGIN MVP LOG ===
++        log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] processing_command_response type={s} content_len={d} is_err={}", .{
++            @tagName(command),
++            content.len,
++            is_err,
++        });
++        // === END MVP LOG ===
+         switch (command) {
+             .user => {},
+ 
+@@ -1108,6 +1124,12 @@ pub const Viewer = struct {
+         };
+         const pane: *Pane = entry.value_ptr;
+         const t: *Terminal = &pane.terminal;
++        // === BEGIN MVP LOG ===
++        log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] output_routed_to_terminal pane_id={d} data_len={d}", .{
++            id,
++            data.len,
++        });
++        // === END MVP LOG ===
+ 
+         var stream = t.vtStream();
+         defer stream.deinit();
+@@ -1154,6 +1176,13 @@ pub const Viewer = struct {
+                     .rows = @intCast(layout.height),
+                 });
+                 errdefer t.deinit(gpa_alloc);
++                // === BEGIN MVP LOG ===
++                log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] terminal_created pane_id={d} cols={d} rows={d}", .{
++                    id,
++                    layout.width,
++                    layout.height,
++                });
++                // === END MVP LOG ===
+ 
+                 gop.value_ptr.* = .{
+                     .terminal = t,
+@@ -1183,6 +1212,9 @@ pub const Viewer = struct {
+ 
+         // Move into the command queue state
+         self.state = .command_queue;
++        // === BEGIN MVP LOG ===
++        log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] state_transition ->command_queue", .{});
++        // === END MVP LOG ===
+ 
+         return self.singleAction(action);
+     }
+@@ -1213,6 +1245,10 @@ pub const Viewer = struct {
+     }
+ 
+     fn defunct(self: *Viewer) []const Action {
++        // === BEGIN MVP LOG ===
++        log.info("[terminal/tmux/viewer.zig] [GHY:TMUX:VIEWER] state_transition {s}->defunct", .{@tagName(self.state)});
++        log.info("[terminal/tmux/viewer.zig] [INV:WARN] viewer entered defunct state from {s}", .{@tagName(self.state)});
++        // === END MVP LOG ===
+         self.state = .defunct;
+         return self.singleAction(.exit);
+     }
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+index 0f35b5787..b9957086b 100644
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1333,6 +1333,9 @@ pub const ReadThread = struct {
+ 
+                 // log.info("DATA: {d}", .{n});
+                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
++                // === BEGIN MVP LOG ===
++                log.debug("[termio/Exec.zig] [GHY:PTY:READ] n={d}", .{n});
++                // === END MVP LOG ===
+             }
+ 
+             // Wait for data.
+diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
+index fb3a6b3ff..85cd8f3d5 100644
+--- a/src/termio/stream_handler.zig
++++ b/src/termio/stream_handler.zig
+@@ -390,7 +390,7 @@ pub const StreamHandler = struct {
+                 // If tmux control mode is disabled at the build level,
+                 // then this whole block shouldn't be analyzed.
+                 if (comptime !tmux_enabled) break :tmux;
+-                log.info("tmux control mode event cmd={f}", .{tmux});
++                log.info("[termio/stream_handler.zig] tmux control mode event cmd={f}", .{tmux});
+ 
+                 switch (tmux) {
+                     .enter => {
+@@ -401,6 +401,9 @@ pub const StreamHandler = struct {
+                         viewer.* = try .init(self.alloc);
+                         errdefer viewer.deinit();
+                         self.tmux_viewer = viewer;
++                        // === BEGIN MVP LOG ===
++                        log.info("[termio/stream_handler.zig] [GHY:TMUX:VIEWER] viewer_created state=startup_block", .{});
++                        // === END MVP LOG ===
+                         break :tmux;
+                     },
+ 
+@@ -410,6 +413,9 @@ pub const StreamHandler = struct {
+                             viewer.deinit();
+                             self.alloc.destroy(viewer);
+                             self.tmux_viewer = null;
++                            // === BEGIN MVP LOG ===
++                            log.info("[termio/stream_handler.zig] [GHY:TMUX:VIEWER] viewer_destroyed", .{});
++                            // === END MVP LOG ===
+                         }
+ 
+                         // And always break since we assert below
+@@ -427,7 +433,7 @@ pub const StreamHandler = struct {
+                     // This can only really happen if we failed to
+                     // initialize the viewer on enter.
+                     log.info(
+-                        "received tmux control mode command without viewer: {f}",
++                        "[termio/stream_handler.zig] received tmux control mode command without viewer: {f}",
+                         .{tmux},
+                     );
+ 
+@@ -435,7 +441,7 @@ pub const StreamHandler = struct {
+                 };
+ 
+                 for (viewer.next(.{ .tmux = tmux })) |action| {
+-                    log.info("tmux viewer action={f}", .{action});
++                    log.info("[termio/stream_handler.zig] tmux viewer action={f}", .{action});
+                     switch (action) {
+                         .exit => {
+                             // We ignore this because we will fully exit when
+@@ -447,14 +453,26 @@ pub const StreamHandler = struct {
+                         .command => |command| {
+                             assert(command.len > 0);
+                             assert(command[command.len - 1] == '\n');
++                            // === BEGIN MVP LOG ===
++                            log.info("[termio/stream_handler.zig] [GHY:TMUX:CMD] sending_to_tmux len={d} text=\"{s}\"", .{
++                                command.len,
++                                std.mem.trimRight(u8, command, "\n"),
++                            });
++                            // === END MVP LOG ===
+                             self.messageWriter(try termio.Message.writeReq(
+                                 self.alloc,
+                                 command,
+                             ));
+                         },
+ 
+-                        .windows => {
+-                            // TODO
++                        .windows => |windows| {
++                            // === BEGIN MVP LOG ===
++                            log.info("[termio/stream_handler.zig] [GHY:TMUX:WIN] windows_action window_count={d}", .{windows.len});
++                            for (windows) |w| {
++                                log.info("[termio/stream_handler.zig] [GHY:TMUX:WIN]   window id={d} {d}x{d}", .{ w.id, w.width, w.height });
++                            }
++                            log.info("[termio/stream_handler.zig] [GHY:TMUX:WIN] ^^^ THIS DATA IS CORRECT BUT DROPPED — no apprt integration yet", .{});
++                            // === END MVP LOG ===
+                         },
+                     }
+                 }

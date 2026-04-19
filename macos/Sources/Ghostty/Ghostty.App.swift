@@ -491,6 +491,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_NEW_WINDOW:
                 newWindow(app, target: target)
 
+            case GHOSTTY_ACTION_NEW_WINDOW_WITH_SURFACE_CONFIG:
+                newWindow(app, target: target, config: action.action.new_window_with_surface_config)
+
             case GHOSTTY_ACTION_NEW_TAB:
                 newTab(app, target: target)
 
@@ -799,6 +802,38 @@ extension Ghostty {
                     object: surfaceView,
                     userInfo: [
                         Notification.NewSurfaceConfigKey: SurfaceConfiguration(from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_WINDOW)),
+                    ]
+                )
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        private static func newWindow(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            config: ghostty_surface_config_s
+        ) {
+            let surfaceConfig = SurfaceConfiguration(from: config)
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyNewWindow,
+                    object: nil,
+                    userInfo: [
+                        Notification.NewSurfaceConfigKey: surfaceConfig,
+                    ]
+                )
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyNewWindow,
+                    object: surfaceView,
+                    userInfo: [
+                        Notification.NewSurfaceConfigKey: surfaceConfig,
                     ]
                 )
 

@@ -10,28 +10,38 @@ const termio = @import("../termio.zig");
 const WRITE_REQ_PREALLOC = std.math.pow(usize, 2, 5);
 
 /// The kinds of backends.
-pub const Kind = enum { exec };
+pub const Kind = enum { exec, tmux };
 
 /// Configuration for the various backend types.
 pub const Config = union(Kind) {
     /// Exec uses posix exec to run a command with a pty.
     exec: termio.Exec.Config,
+
+    /// Tmux mirrors pane content into an independently owned Terminal.
+    tmux: termio.Tmux.Config,
 };
 
 /// Backend implementations. A backend is responsible for owning the pty
 /// behavior and providing read/write capabilities.
+///
+/// INVARIANT: Every method switch must handle all backend kinds with a safe
+/// implementation. If a method does not apply to a backend kind, it must be an
+/// explicit no-op or return a safe default.
 pub const Backend = union(Kind) {
     exec: termio.Exec,
+    tmux: termio.Tmux,
 
     pub fn deinit(self: *Backend) void {
         switch (self.*) {
             .exec => |*exec| exec.deinit(),
+            .tmux => |*tmux| tmux.deinit(),
         }
     }
 
     pub fn initTerminal(self: *Backend, t: *terminal.Terminal) void {
         switch (self.*) {
             .exec => |*exec| exec.initTerminal(t),
+            .tmux => |*tmux| tmux.initTerminal(t),
         }
     }
 
@@ -43,12 +53,14 @@ pub const Backend = union(Kind) {
     ) !void {
         switch (self.*) {
             .exec => |*exec| try exec.threadEnter(alloc, io, td),
+            .tmux => |*tmux| try tmux.threadEnter(alloc, io, td),
         }
     }
 
     pub fn threadExit(self: *Backend, td: *termio.Termio.ThreadData) void {
         switch (self.*) {
             .exec => |*exec| exec.threadExit(td),
+            .tmux => |*tmux| tmux.threadExit(td),
         }
     }
 
@@ -59,6 +71,7 @@ pub const Backend = union(Kind) {
     ) !void {
         switch (self.*) {
             .exec => |*exec| try exec.focusGained(td, focused),
+            .tmux => |*tmux| try tmux.focusGained(td, focused),
         }
     }
 
@@ -69,6 +82,7 @@ pub const Backend = union(Kind) {
     ) !void {
         switch (self.*) {
             .exec => |*exec| try exec.resize(grid_size, screen_size),
+            .tmux => |*tmux| try tmux.resize(grid_size, screen_size),
         }
     }
 
@@ -81,6 +95,7 @@ pub const Backend = union(Kind) {
     ) !void {
         switch (self.*) {
             .exec => |*exec| try exec.queueWrite(alloc, td, data, linefeed),
+            .tmux => |*tmux| try tmux.queueWrite(alloc, td, data, linefeed),
         }
     }
 
@@ -98,6 +113,12 @@ pub const Backend = union(Kind) {
                 exit_code,
                 runtime_ms,
             ),
+            .tmux => |*tmux| try tmux.childExitedAbnormally(
+                gpa,
+                t,
+                exit_code,
+                runtime_ms,
+            ),
         }
     }
 };
@@ -105,15 +126,26 @@ pub const Backend = union(Kind) {
 /// Termio thread data. See termio.ThreadData for docs.
 pub const ThreadData = union(Kind) {
     exec: termio.Exec.ThreadData,
+    tmux: termio.Tmux.ThreadData,
 
     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
         switch (self.*) {
             .exec => |*exec| exec.deinit(alloc),
+            .tmux => |*tmux| tmux.deinit(alloc),
         }
     }
 
     pub fn changeConfig(self: *ThreadData, config: *termio.DerivedConfig) void {
-        _ = self;
-        _ = config;
+        switch (self.*) {
+            .exec => {},
+            .tmux => |*tmux| tmux.changeConfig(config),
+        }
     }
 };
+
+comptime {
+    const kind_fields = @typeInfo(Kind).@"enum".fields.len;
+    std.debug.assert(kind_fields == @typeInfo(@typeInfo(Config).@"union".tag_type.?).@"enum".fields.len);
+    std.debug.assert(kind_fields == @typeInfo(@typeInfo(Backend).@"union".tag_type.?).@"enum".fields.len);
+    std.debug.assert(kind_fields == @typeInfo(@typeInfo(ThreadData).@"union".tag_type.?).@"enum".fields.len);
+}

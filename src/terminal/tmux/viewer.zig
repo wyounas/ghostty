@@ -211,6 +211,13 @@ pub const Viewer = struct {
         /// never reuses window IDs within a server process lifetime.
         windows: []const Window,
 
+        /// Primary-screen visible bytes for a pane. This is used to seed a
+        /// tmux-backed surface with a static snapshot.
+        pane_snapshot: struct {
+            pane_id: usize,
+            data: []const u8,
+        },
+
         pub fn format(self: Action, writer: *std.Io.Writer) !void {
             const T = Action;
             const info = @typeInfo(T).@"union";
@@ -810,11 +817,21 @@ pub const Viewer = struct {
                 content,
             ),
 
-            .pane_visible => |cap| try self.receivedPaneVisible(
-                cap.screen_key,
-                cap.id,
-                content,
-            ),
+            .pane_visible => |cap| {
+                try self.receivedPaneVisible(
+                    cap.screen_key,
+                    cap.id,
+                    content,
+                );
+                if (cap.screen_key == .primary) {
+                    try actions.append(arena_alloc, .{
+                        .pane_snapshot = .{
+                            .pane_id = cap.id,
+                            .data = try arena_alloc.dupe(u8, content),
+                        },
+                    });
+                }
+            },
 
             .tmux_version => try self.receivedTmuxVersion(content),
         }
@@ -893,12 +910,16 @@ pub const Viewer = struct {
             });
         }
 
-        // Setup our windows action so the caller can process GUI
-        // window changes.
-        try actions.append(arena_alloc, .{ .windows = windows.items });
-
-        // Sync up our layouts. This will populate unknown panes, prune, etc.
+        // Sync up our layouts first. This transfers the newly parsed
+        // windows into self.windows, which gives us stable storage for
+        // the action payload we emit below.
         try self.syncLayouts(windows.items);
+
+        // Setup our windows action so the caller can process GUI
+        // window changes. We must reference self.windows here rather
+        // than the temporary local `windows` list because that storage
+        // is freed before the caller consumes the actions.
+        try actions.append(arena_alloc, .{ .windows = self.windows.items });
     }
 
     fn receivedPaneState(
@@ -1650,6 +1671,25 @@ test "initial flow" {
             .contains_tags = &.{ .windows, .command },
             .contains_command = "capture-pane",
             // pane_history for pane 0 (primary)
+            .check = (struct {
+                fn check(_: *Viewer, actions: []const Viewer.Action) anyerror!void {
+                    for (actions) |action| {
+                        if (action != .windows) continue;
+                        try testing.expectEqual(@as(usize, 1), action.windows.len);
+                        try testing.expectEqual(@as(usize, 0), action.windows[0].id);
+                        try testing.expectEqual(@as(usize, 83), action.windows[0].width);
+                        try testing.expectEqual(@as(usize, 44), action.windows[0].height);
+
+                        const first_pane = action.windows[0].layout.firstPane().?;
+                        try testing.expectEqual(@as(usize, 0), first_pane.id);
+                        try testing.expectEqual(@as(usize, 83), first_pane.cols);
+                        try testing.expectEqual(@as(usize, 20), first_pane.rows);
+                        return;
+                    }
+
+                    return error.MissingWindowsAction;
+                }
+            }).check,
             .check_command = (struct {
                 fn check(_: *Viewer, command: []const u8) anyerror!void {
                     try testing.expect(std.mem.containsAtLeast(u8, command, 1, "-t %0"));

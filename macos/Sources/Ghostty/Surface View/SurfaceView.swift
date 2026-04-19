@@ -641,6 +641,9 @@ extension Ghostty {
     /// The configuration for a surface. For any configuration not set, defaults will be chosen from
     /// libghostty, usually from the Ghostty configuration.
     struct SurfaceConfiguration {
+        /// Backend to use for the new surface.
+        var backend: ghostty_surface_config_backend_e = GHOSTTY_SURFACE_CONFIG_BACKEND_EXEC
+
         /// Explicit font size to use in points
         var fontSize: Float32?
 
@@ -662,9 +665,18 @@ extension Ghostty {
         /// Context for surface creation
         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW
 
+        /// Source surface for tmux MVP creation.
+        var tmuxSourceSurface: ghostty_surface_t?
+
+        /// tmux MVP pane metadata.
+        var tmuxPaneID: UInt = 0
+        var tmuxCols: UInt = 0
+        var tmuxRows: UInt = 0
+
         init() {}
 
         init(from config: ghostty_surface_config_s) {
+            self.backend = config.backend
             self.fontSize = config.font_size
             if let workingDirectory = config.working_directory {
                 self.workingDirectory = String.init(cString: workingDirectory, encoding: .utf8)
@@ -684,6 +696,10 @@ extension Ghostty {
                 }
             }
             self.context = config.context
+            self.tmuxSourceSurface = config.tmux_mvp_source_surface
+            self.tmuxPaneID = UInt(config.tmux_mvp_pane_id)
+            self.tmuxCols = UInt(config.tmux_mvp_cols)
+            self.tmuxRows = UInt(config.tmux_mvp_rows)
         }
 
         /// Provides a C-compatible ghostty configuration within a closure. The configuration
@@ -719,6 +735,11 @@ extension Ghostty {
 
             // Set context
             config.context = context
+            config.backend = backend
+            config.tmux_mvp_source_surface = tmuxSourceSurface
+            config.tmux_mvp_pane_id = Int(tmuxPaneID)
+            config.tmux_mvp_cols = Int(tmuxCols)
+            config.tmux_mvp_rows = Int(tmuxRows)
 
             // Use withCString to ensure strings remain valid for the duration of the closure
             return try workingDirectory.withCString { cWorkingDir in

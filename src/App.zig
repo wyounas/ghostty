@@ -247,6 +247,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
         switch (message) {
             .open_config => try self.performAction(rt_app, .open_config),
             .new_window => |msg| try self.newWindow(rt_app, msg),
+            .new_tmux_window => |msg| try self.newTmuxWindow(rt_app, msg),
             .close => |surface| self.closeSurface(surface),
             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
@@ -300,6 +301,28 @@ pub fn newWindow(self: *App, rt_app: *apprt.App, msg: Message.NewWindow) !void {
         target,
         .new_window,
         {},
+    );
+}
+
+fn newTmuxWindow(self: *App, rt_app: *apprt.App, msg: Message.NewTmuxWindow) !void {
+    if (!self.hasSurface(msg.source)) return;
+
+    log.info(
+        "new tmux window source={} pane_id={} cols={} rows={}",
+        .{ msg.source, msg.pane_id, msg.cols, msg.rows },
+    );
+
+    var config = msg.source.rt_surface.newSurfaceOptions(.window);
+    config.backend = .tmux;
+    config.tmux_mvp_source_surface = msg.source.rt_surface;
+    config.tmux_mvp_pane_id = msg.pane_id;
+    config.tmux_mvp_cols = msg.cols;
+    config.tmux_mvp_rows = msg.rows;
+
+    _ = try rt_app.performAction(
+        .{ .surface = msg.source },
+        .new_window_with_surface_config,
+        config,
     );
 }
 
@@ -540,6 +563,9 @@ pub const Message = union(enum) {
     /// Create a new terminal window.
     new_window: NewWindow,
 
+    /// Create a new tmux snapshot window.
+    new_tmux_window: NewTmuxWindow,
+
     /// Close a surface. This notifies the runtime that a surface
     /// should close.
     close: *Surface,
@@ -562,6 +588,13 @@ pub const Message = union(enum) {
     const NewWindow = struct {
         /// The parent surface
         parent: ?*Surface = null,
+    };
+
+    const NewTmuxWindow = struct {
+        source: *Surface,
+        pane_id: usize,
+        cols: usize,
+        rows: usize,
     };
 };
 

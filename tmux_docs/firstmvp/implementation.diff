@@ -1,0 +1,1233 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 40ff55c9b..349f9abac 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -437,6 +437,11 @@ typedef enum {
+   GHOSTTY_SURFACE_CONTEXT_SPLIT = 2,
+ } ghostty_surface_context_e;
+ 
++typedef enum {
++  GHOSTTY_SURFACE_CONFIG_BACKEND_EXEC = 0,
++  GHOSTTY_SURFACE_CONFIG_BACKEND_TMUX = 1,
++} ghostty_surface_config_backend_e;
++
+ typedef struct {
+   ghostty_platform_e platform_tag;
+   ghostty_platform_u platform;
+@@ -450,6 +455,11 @@ typedef struct {
+   const char* initial_input;
+   bool wait_after_command;
+   ghostty_surface_context_e context;
++  ghostty_surface_config_backend_e backend;
++  ghostty_surface_t tmux_mvp_source_surface;
++  size_t tmux_mvp_pane_id;
++  size_t tmux_mvp_cols;
++  size_t tmux_mvp_rows;
+ } ghostty_surface_config_s;
+ 
+ typedef struct {
+@@ -921,6 +931,7 @@ typedef enum {
+   GHOSTTY_ACTION_SEARCH_SELECTED,
+   GHOSTTY_ACTION_READONLY,
+   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
++  GHOSTTY_ACTION_NEW_WINDOW_WITH_SURFACE_CONFIG,
+ } ghostty_action_tag_e;
+ 
+ typedef union {
+@@ -962,6 +973,7 @@ typedef union {
+   ghostty_action_search_total_s search_total;
+   ghostty_action_search_selected_s search_selected;
+   ghostty_action_readonly_e readonly;
++  ghostty_surface_config_s new_window_with_surface_config;
+ } ghostty_action_u;
+ 
+ typedef struct {
+diff --git a/macos/Sources/Ghostty/Ghostty.App.swift b/macos/Sources/Ghostty/Ghostty.App.swift
+index 2f0644b93..51fabef78 100644
+--- a/macos/Sources/Ghostty/Ghostty.App.swift
++++ b/macos/Sources/Ghostty/Ghostty.App.swift
+@@ -491,6 +491,9 @@ extension Ghostty {
+             case GHOSTTY_ACTION_NEW_WINDOW:
+                 newWindow(app, target: target)
+ 
++            case GHOSTTY_ACTION_NEW_WINDOW_WITH_SURFACE_CONFIG:
++                newWindow(app, target: target, config: action.action.new_window_with_surface_config)
++
+             case GHOSTTY_ACTION_NEW_TAB:
+                 newTab(app, target: target)
+ 
+@@ -807,6 +810,38 @@ extension Ghostty {
+             }
+         }
+ 
++        private static func newWindow(
++            _ app: ghostty_app_t,
++            target: ghostty_target_s,
++            config: ghostty_surface_config_s
++        ) {
++            let surfaceConfig = SurfaceConfiguration(from: config)
++            switch target.tag {
++            case GHOSTTY_TARGET_APP:
++                NotificationCenter.default.post(
++                    name: Notification.ghosttyNewWindow,
++                    object: nil,
++                    userInfo: [
++                        Notification.NewSurfaceConfigKey: surfaceConfig,
++                    ]
++                )
++
++            case GHOSTTY_TARGET_SURFACE:
++                guard let surface = target.target.surface else { return }
++                guard let surfaceView = self.surfaceView(from: surface) else { return }
++                NotificationCenter.default.post(
++                    name: Notification.ghosttyNewWindow,
++                    object: surfaceView,
++                    userInfo: [
++                        Notification.NewSurfaceConfigKey: surfaceConfig,
++                    ]
++                )
++
++            default:
++                assertionFailure()
++            }
++        }
++
+         private static func newTab(_ app: ghostty_app_t, target: ghostty_target_s) {
+             switch target.tag {
+             case GHOSTTY_TARGET_APP:
+diff --git a/macos/Sources/Ghostty/Surface View/SurfaceView.swift b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
+index 47503dc0e..cecf20328 100644
+--- a/macos/Sources/Ghostty/Surface View/SurfaceView.swift
++++ b/macos/Sources/Ghostty/Surface View/SurfaceView.swift
+@@ -641,6 +641,9 @@ extension Ghostty {
+     /// The configuration for a surface. For any configuration not set, defaults will be chosen from
+     /// libghostty, usually from the Ghostty configuration.
+     struct SurfaceConfiguration {
++        /// Backend to use for the new surface.
++        var backend: ghostty_surface_config_backend_e = GHOSTTY_SURFACE_CONFIG_BACKEND_EXEC
++
+         /// Explicit font size to use in points
+         var fontSize: Float32?
+ 
+@@ -662,9 +665,18 @@ extension Ghostty {
+         /// Context for surface creation
+         var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_WINDOW
+ 
++        /// Source surface for tmux MVP creation.
++        var tmuxSourceSurface: ghostty_surface_t?
++
++        /// tmux MVP pane metadata.
++        var tmuxPaneID: UInt = 0
++        var tmuxCols: UInt = 0
++        var tmuxRows: UInt = 0
++
+         init() {}
+ 
+         init(from config: ghostty_surface_config_s) {
++            self.backend = config.backend
+             self.fontSize = config.font_size
+             if let workingDirectory = config.working_directory {
+                 self.workingDirectory = String.init(cString: workingDirectory, encoding: .utf8)
+@@ -684,6 +696,10 @@ extension Ghostty {
+                 }
+             }
+             self.context = config.context
++            self.tmuxSourceSurface = config.tmux_mvp_source_surface
++            self.tmuxPaneID = UInt(config.tmux_mvp_pane_id)
++            self.tmuxCols = UInt(config.tmux_mvp_cols)
++            self.tmuxRows = UInt(config.tmux_mvp_rows)
+         }
+ 
+         /// Provides a C-compatible ghostty configuration within a closure. The configuration
+@@ -719,6 +735,11 @@ extension Ghostty {
+ 
+             // Set context
+             config.context = context
++            config.backend = backend
++            config.tmux_mvp_source_surface = tmuxSourceSurface
++            config.tmux_mvp_pane_id = Int(tmuxPaneID)
++            config.tmux_mvp_cols = Int(tmuxCols)
++            config.tmux_mvp_rows = Int(tmuxRows)
+ 
+             // Use withCString to ensure strings remain valid for the duration of the closure
+             return try workingDirectory.withCString { cWorkingDir in
+diff --git a/src/App.zig b/src/App.zig
+index 33c8318db..a0dfe4a00 100644
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -247,6 +247,7 @@ fn drainMailbox(self: *App, rt_app: *apprt.App) !void {
+         switch (message) {
+             .open_config => try self.performAction(rt_app, .open_config),
+             .new_window => |msg| try self.newWindow(rt_app, msg),
++            .new_tmux_window => |msg| try self.newTmuxWindow(rt_app, msg),
+             .close => |surface| self.closeSurface(surface),
+             .surface_message => |msg| try self.surfaceMessage(msg.surface, msg.message),
+             .redraw_surface => |surface| try self.redrawSurface(rt_app, surface),
+@@ -303,6 +304,28 @@ pub fn newWindow(self: *App, rt_app: *apprt.App, msg: Message.NewWindow) !void {
+     );
+ }
+ 
++fn newTmuxWindow(self: *App, rt_app: *apprt.App, msg: Message.NewTmuxWindow) !void {
++    if (!self.hasSurface(msg.source)) return;
++
++    log.info(
++        "new tmux window source={} pane_id={} cols={} rows={}",
++        .{ msg.source, msg.pane_id, msg.cols, msg.rows },
++    );
++
++    var config = msg.source.rt_surface.newSurfaceOptions(.window);
++    config.backend = .tmux;
++    config.tmux_mvp_source_surface = msg.source.rt_surface;
++    config.tmux_mvp_pane_id = msg.pane_id;
++    config.tmux_mvp_cols = msg.cols;
++    config.tmux_mvp_rows = msg.rows;
++
++    _ = try rt_app.performAction(
++        .{ .surface = msg.source },
++        .new_window_with_surface_config,
++        config,
++    );
++}
++
+ /// Handle an app-level focus event. This should be called whenever
+ /// the focus state of the entire app containing Ghostty changes.
+ /// This is separate from surface focus events. See the `focused`
+@@ -540,6 +563,9 @@ pub const Message = union(enum) {
+     /// Create a new terminal window.
+     new_window: NewWindow,
+ 
++    /// Create a new tmux snapshot window.
++    new_tmux_window: NewTmuxWindow,
++
+     /// Close a surface. This notifies the runtime that a surface
+     /// should close.
+     close: *Surface,
+@@ -563,6 +589,13 @@ pub const Message = union(enum) {
+         /// The parent surface
+         parent: ?*Surface = null,
+     };
++
++    const NewTmuxWindow = struct {
++        source: *Surface,
++        pane_id: usize,
++        cols: usize,
++        rows: usize,
++    };
+ };
+ 
+ /// Mailbox is the way that other threads send the app thread messages.
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 4d66622e3..1ea0e511e 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -168,6 +168,26 @@ search: ?Search = null,
+ /// Used to rate limit BEL handling.
+ last_bell_time: ?std.time.Instant = null,
+ 
++/// Temporary tmux MVP state for the source and target surfaces.
++tmux_mvp: TmuxMvpState = .{},
++
++pub const InitBackend = union(enum) {
++    exec,
++    tmux_mvp: struct {
++        source_surface: *Surface,
++        pane_id: usize,
++    },
++};
++
++const TmuxMvpState = struct {
++    requested: bool = false,
++    pane_id: ?usize = null,
++    target: ?*Surface = null,
++    pending_snapshot: ?[]u8 = null,
++    target_of: ?*Surface = null,
++    target_pane_id: ?usize = null,
++};
++
+ /// The effect of an input event. This can be used by callers to take
+ /// the appropriate action after an input event. For example, key
+ /// input can be forwarded to the OS for further processing if it
+@@ -463,6 +483,7 @@ pub fn init(
+     app: *App,
+     rt_app: *apprt.runtime.App,
+     rt_surface: *apprt.runtime.Surface,
++    backend_init: InitBackend,
+ ) !void {
+     // Apply our conditional state. If we fail to apply the conditional state
+     // then we log and attempt to move forward with the old config.
+@@ -600,17 +621,25 @@ pub fn init(
+         .io_thr = undefined,
+         .size = size,
+         .config = derived_config,
++        .tmux_mvp = switch (backend_init) {
++            .exec => .{},
++            .tmux_mvp => |tmux| .{
++                .target_of = tmux.source_surface,
++                .target_pane_id = tmux.pane_id,
++            },
++        },
+ 
+         // Our conditional state is initialized to the app state. This
+         // lets us get the most likely correct color theme and so on.
+         .config_conditional_state = app.config_conditional_state,
+     };
+ 
+-    // The command we're going to execute
++    // The command we're going to execute. This is still useful outside of the
++    // exec backend path for title initialization logic.
+     const command: ?configpkg.Command = command: {
+         if (app.first) {
+-            if (config.@"initial-command") |command| {
+-                break :command command;
++            if (config.@"initial-command") |command_| {
++                break :command command_;
+             }
+         }
+         break :command config.command;
+@@ -620,42 +649,47 @@ pub fn init(
+     // This separate block ({}) is important because our errdefers must
+     // be scoped here to be valid.
+     {
+-        var env = rt_surface.defaultTermioEnv() catch |err| env: {
+-            // If an error occurs, we don't want to block surface startup.
+-            log.warn("error getting env map for surface err={}", .{err});
+-            break :env internal_os.getEnvMap(alloc) catch
+-                std.process.EnvMap.init(alloc);
+-        };
+-        errdefer env.deinit();
+-
+-        // don't leak GHOSTTY_LOG to any subprocesses
+-        env.remove("GHOSTTY_LOG");
+-
+-        // Initialize our IO backend
+-        var io_exec = try termio.Exec.init(alloc, .{
+-            .command = command,
+-            .env = env,
+-            .env_override = config.env,
+-            .shell_integration = config.@"shell-integration",
+-            .shell_integration_features = config.@"shell-integration-features",
+-            .cursor_blink = config.@"cursor-style-blink",
+-            .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
+-            .resources_dir = global_state.resources_dir.host(),
+-            .term = config.term,
+-            .rt_pre_exec_info = .init(config),
+-            .rt_post_fork_info = .init(config),
+-        });
+-        errdefer io_exec.deinit();
+-
+         // Initialize our IO mailbox
+         var io_mailbox = try termio.Mailbox.initSPSC(alloc);
+         errdefer io_mailbox.deinit(alloc);
+ 
++        const backend: termio.Backend = switch (backend_init) {
++            .exec => exec: {
++                var env = rt_surface.defaultTermioEnv() catch |err| env: {
++                    // If an error occurs, we don't want to block surface startup.
++                    log.warn("error getting env map for surface err={}", .{err});
++                    break :env internal_os.getEnvMap(alloc) catch
++                        std.process.EnvMap.init(alloc);
++                };
++                errdefer env.deinit();
++
++                // don't leak GHOSTTY_LOG to any subprocesses
++                env.remove("GHOSTTY_LOG");
++
++                var io_exec = try termio.Exec.init(alloc, .{
++                    .command = command,
++                    .env = env,
++                    .env_override = config.env,
++                    .shell_integration = config.@"shell-integration",
++                    .shell_integration_features = config.@"shell-integration-features",
++                    .cursor_blink = config.@"cursor-style-blink",
++                    .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
++                    .resources_dir = global_state.resources_dir.host(),
++                    .term = config.term,
++                    .rt_pre_exec_info = .init(config),
++                    .rt_post_fork_info = .init(config),
++                });
++                errdefer io_exec.deinit();
++                break :exec .{ .exec = io_exec };
++            },
++            .tmux_mvp => |tmux| .{ .tmux = termio.Tmux.init(.{ .pane_id = tmux.pane_id }) },
++        };
++
+         try termio.Termio.init(&self.io, alloc, .{
+             .size = size,
+             .full_config = config,
+             .config = try termio.Termio.DerivedConfig.init(alloc, config),
+-            .backend = .{ .exec = io_exec },
++            .backend = backend,
+             .mailbox = io_mailbox,
+             .renderer_state = &self.renderer_state,
+             .renderer_wakeup = render_thread.wakeup,
+@@ -771,9 +805,29 @@ pub fn init(
+ 
+     // We are no longer the first surface
+     app.first = false;
++
++    if (backend_init == .tmux_mvp) {
++        self.readonly = true;
++    }
+ }
+ 
+ pub fn deinit(self: *Surface) void {
++    if (self.tmux_mvp.target_of) |source| {
++        const pane_id = self.tmux_mvp.target_pane_id orelse 0;
++        const app_mailbox: App.Mailbox = .{ .rt_app = self.rt_app, .mailbox = &self.app.mailbox };
++        _ = app_mailbox.push(.{
++            .surface_message = .{
++                .surface = source,
++                .message = .{
++                    .tmux_mvp_target_closed = .{
++                        .pane_id = pane_id,
++                        .target = self,
++                    },
++                },
++            },
++        }, .{ .instant = {} });
++    }
++
+     // Stop search thread
+     if (self.search) |*s| s.deinit();
+ 
+@@ -816,6 +870,7 @@ pub fn deinit(self: *Surface) void {
+ 
+     // Clean up our render state
+     if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
++    if (self.tmux_mvp.pending_snapshot) |snapshot| self.alloc.free(snapshot);
+     self.alloc.destroy(self.renderer_state.mutex);
+     self.config.deinit();
+ 
+@@ -1149,9 +1204,48 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
+                 .{ .selected = v },
+             );
+         },
++
++        .tmux_mvp_target_ready => |v| {
++            self.renderer_state.mutex.lock();
++            defer self.renderer_state.mutex.unlock();
++            self.tmux_mvp.pane_id = v.pane_id;
++            self.tmux_mvp.target = v.target;
++            try self.tmuxMvpFlushPendingSnapshotLocked();
++        },
++
++        .tmux_mvp_target_closed => |v| {
++            self.renderer_state.mutex.lock();
++            defer self.renderer_state.mutex.unlock();
++            if (self.tmux_mvp.target == v.target) {
++                self.tmux_mvp.target = null;
++            }
++        },
+     }
+ }
+ 
++pub fn tmuxMvpStoreSnapshotLocked(self: *Surface, data: []const u8) !void {
++    if (self.tmux_mvp.pending_snapshot) |snapshot| self.alloc.free(snapshot);
++    self.tmux_mvp.pending_snapshot = try self.alloc.dupe(u8, data);
++}
++
++pub fn tmuxMvpFlushPendingSnapshot(self: *Surface) !void {
++    self.renderer_state.mutex.lock();
++    defer self.renderer_state.mutex.unlock();
++    try self.tmuxMvpFlushPendingSnapshotLocked();
++}
++
++pub fn tmuxMvpFlushPendingSnapshotLocked(self: *Surface) !void {
++    const target = self.tmux_mvp.target orelse return;
++    const snapshot = self.tmux_mvp.pending_snapshot orelse return;
++    self.tmux_mvp.pending_snapshot = null;
++    target.io.queueMessage(.{
++        .process_output = .{
++            .alloc = self.alloc,
++            .data = snapshot,
++        },
++    }, .unlocked);
++}
++
+ fn selectionScrollTick(self: *Surface) !void {
+     // If we're no longer active then we don't do anything.
+     if (!self.selection_scroll_active) return;
+@@ -1291,6 +1385,9 @@ fn childExitedAbnormally(
+     // Build up our command for the error message
+     const command = try std.mem.join(alloc, " ", switch (self.io.backend) {
+         .exec => |*exec| exec.subprocess.args,
++        .tmux => &.{ "tmux", "pane", std.fmt.allocPrint(alloc, "{d}", .{
++            self.tmux_mvp.target_pane_id orelse self.tmux_mvp.pane_id orelse 0,
++        }) catch "0" },
+     });
+     const runtime_str = try std.fmt.allocPrint(alloc, "{d} ms", .{info.runtime_ms});
+ 
+diff --git a/src/apprt/action.zig b/src/apprt/action.zig
+index f6865af83..1e655f75b 100644
+--- a/src/apprt/action.zig
++++ b/src/apprt/action.zig
+@@ -343,6 +343,9 @@ pub const Action = union(Key) {
+     /// otherwise the terminal-set title.
+     copy_title_to_clipboard,
+ 
++    /// Open a new window using an explicit surface configuration.
++    new_window_with_surface_config: apprt.surface.SurfaceConfig,
++
+     /// Sync with: ghostty_action_tag_e
+     pub const Key = enum(c_int) {
+         quit,
+@@ -410,6 +413,7 @@ pub const Action = union(Key) {
+         search_selected,
+         readonly,
+         copy_title_to_clipboard,
++        new_window_with_surface_config,
+ 
+         test "ghostty.h Action.Key" {
+             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
+@@ -454,11 +458,7 @@ pub const Action = union(Key) {
+         // For ABI compatibility, we expect that this is our union size.
+         // At the time of writing, we don't promise ABI compatibility
+         // so we can change this but I want to be aware of it.
+-        assert(@sizeOf(CValue) == switch (@sizeOf(usize)) {
+-            4 => 16,
+-            8 => 24,
+-            else => unreachable,
+-        });
++        assert(@sizeOf(CValue) == @sizeOf(apprt.surface.SurfaceConfig));
+     }
+ 
+     /// Returns the value type for the given key.
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 0d5a4f8da..3e779149b 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -397,13 +397,7 @@ pub const PlatformTag = enum(c_int) {
+     ios = 2,
+ };
+ 
+-pub const EnvVar = extern struct {
+-    /// The name of the environment variable.
+-    key: [*:0]const u8,
+-
+-    /// The value of the environment variable.
+-    value: [*:0]const u8,
+-};
++pub const EnvVar = apprt.surface.SurfaceConfigEnvVar;
+ 
+ pub const Surface = struct {
+     app: *App,
+@@ -420,52 +414,12 @@ pub const Surface = struct {
+     title: ?[:0]const u8 = null,
+ 
+     /// Surface initialization options.
+-    pub const Options = extern struct {
+-        /// The platform that this surface is being initialized for and
+-        /// the associated platform-specific configuration.
+-        platform_tag: c_int = 0,
+-        platform: Platform.C = undefined,
+-
+-        /// Userdata passed to some of the callbacks.
+-        userdata: ?*anyopaque = null,
+-
+-        /// The scale factor of the screen.
+-        scale_factor: f64 = 1,
+-
+-        /// The font size to inherit. If 0, default font size will be used.
+-        font_size: f32 = 0,
+-
+-        /// The working directory to load into.
+-        working_directory: ?[*:0]const u8 = null,
+-
+-        /// The command to run in the new surface. If this is set then
+-        /// the "wait-after-command" option is also automatically set to true,
+-        /// since this is used for scripting.
+-        ///
+-        /// This command always run in a shell (e.g. via `/bin/sh -c`),
+-        /// despite Ghostty allowing directly executed commands via config.
+-        /// This is a legacy thing and we should probably change it in the
+-        /// future once we have a concrete use case.
+-        command: ?[*:0]const u8 = null,
+-
+-        /// Extra environment variables to set for the surface.
+-        env_vars: ?[*]EnvVar = null,
+-        env_var_count: usize = 0,
+-
+-        /// Input to send to the command after it is started.
+-        initial_input: ?[*:0]const u8 = null,
+-
+-        /// Wait after the command exits
+-        wait_after_command: bool = false,
+-
+-        /// Context for the new surface
+-        context: apprt.surface.NewSurfaceContext = .window,
+-    };
++    pub const Options = apprt.surface.SurfaceConfig;
+ 
+     pub fn init(self: *Surface, app: *App, opts: Options) !void {
+         self.* = .{
+             .app = app,
+-            .platform = try .init(opts.platform_tag, opts.platform),
++            .platform = try .init(opts.platform_tag, @bitCast(opts.platform)),
+             .userdata = opts.userdata,
+             .core_surface = undefined,
+             .content_scale = .{
+@@ -573,17 +527,57 @@ pub const Surface = struct {
+             config.@"wait-after-command" = true;
+         }
+ 
++        if (opts.backend == .tmux) {
++            config.@"window-width" = @intCast(opts.tmux_mvp_cols);
++            config.@"window-height" = @intCast(opts.tmux_mvp_rows);
++        }
++
+         // Initialize our surface right away. We're given a view that is
+         // ready to use.
++        const core_backend: CoreSurface.InitBackend = switch (opts.backend) {
++            .exec => .exec,
++            .tmux => .{
++                .tmux_mvp = .{
++                    .source_surface = @as(
++                        *Surface,
++                        @ptrCast(@alignCast(opts.tmux_mvp_source_surface.?)),
++                    ).core(),
++                    .pane_id = opts.tmux_mvp_pane_id,
++                },
++            },
++        };
++
+         try self.core_surface.init(
+             app.core_app.alloc,
+             &config,
+             app.core_app,
+             app,
+             self,
++            core_backend,
+         );
+         errdefer self.core_surface.deinit();
+ 
++        if (opts.backend == .tmux) {
++            const source = @as(
++                *Surface,
++                @ptrCast(@alignCast(
++                    opts.tmux_mvp_source_surface orelse return error.InvalidSurface,
++                )),
++            );
++            const app_mailbox: CoreApp.Mailbox = .{ .rt_app = app, .mailbox = &app.core_app.mailbox };
++            _ = app_mailbox.push(.{
++                .surface_message = .{
++                    .surface = source.core(),
++                    .message = .{
++                        .tmux_mvp_target_ready = .{
++                            .pane_id = opts.tmux_mvp_pane_id,
++                            .target = &self.core_surface,
++                        },
++                    },
++                },
++            }, .{ .instant = {} });
++        }
++
+         // If our options requested a specific font-size, set that.
+         if (opts.font_size != 0) {
+             var font_size = self.core_surface.font_size;
+@@ -928,7 +922,7 @@ pub const Surface = struct {
+         };
+     }
+ 
+-    pub fn newSurfaceOptions(self: *const Surface, context: apprt.surface.NewSurfaceContext) apprt.Surface.Options {
++    pub fn newSurfaceOptions(self: *const Surface, context: apprt.surface.NewSurfaceContext) apprt.surface.SurfaceConfig {
+         const font_size: f32 = font_size: {
+             if (!self.app.config.@"window-inherit-font-size") break :font_size 0;
+             break :font_size self.core_surface.font_size.points;
+@@ -945,6 +939,7 @@ pub const Surface = struct {
+             .font_size = font_size,
+             .working_directory = working_directory,
+             .context = context,
++            .backend = .exec,
+         };
+     }
+ 
+@@ -1533,14 +1528,14 @@ pub const CAPI = struct {
+     }
+ 
+     /// Returns initial surface options.
+-    export fn ghostty_surface_config_new() apprt.Surface.Options {
++    export fn ghostty_surface_config_new() apprt.surface.SurfaceConfig {
+         return .{};
+     }
+ 
+     /// Create a new surface as part of an app.
+     export fn ghostty_surface_new(
+         app: *App,
+-        opts: *const apprt.Surface.Options,
++        opts: *const apprt.surface.SurfaceConfig,
+     ) ?*Surface {
+         return surface_new_(app, opts) catch |err| {
+             log.err("error initializing surface err={}", .{err});
+@@ -1550,7 +1545,7 @@ pub const CAPI = struct {
+ 
+     fn surface_new_(
+         app: *App,
+-        opts: *const apprt.Surface.Options,
++        opts: *const apprt.surface.SurfaceConfig,
+     ) !*Surface {
+         return try app.newSurface(opts.*);
+     }
+diff --git a/src/apprt/surface.zig b/src/apprt/surface.zig
+index 3cb0016fa..b1ae083a4 100644
+--- a/src/apprt/surface.zig
++++ b/src/apprt/surface.zig
+@@ -108,6 +108,18 @@ pub const Message = union(enum) {
+     /// Selected search index change
+     search_selected: ?usize,
+ 
++    /// A tmux MVP target surface is ready to receive snapshot bytes.
++    tmux_mvp_target_ready: struct {
++        pane_id: usize,
++        target: *Surface,
++    },
++
++    /// A tmux MVP target surface has closed.
++    tmux_mvp_target_closed: struct {
++        pane_id: usize,
++        target: *Surface,
++    },
++
+     pub const ReportTitleStyle = enum {
+         csi_21_t,
+ 
+@@ -161,6 +173,52 @@ pub const NewSurfaceContext = enum(c_int) {
+     split = 2,
+ };
+ 
++/// Backend to use for a newly created surface.
++pub const SurfaceConfigBackend = enum(c_int) {
++    exec = 0,
++    tmux = 1,
++};
++
++/// Platform-specific fields for embedding APIs. The concrete runtime will
++/// reinterpret these pointers as needed.
++pub const SurfaceConfigPlatform = extern union {
++    macos: extern struct {
++        nsview: ?*anyopaque,
++    },
++
++    ios: extern struct {
++        uiview: ?*anyopaque,
++    },
++};
++
++/// Extra environment variables for surface creation.
++pub const SurfaceConfigEnvVar = extern struct {
++    key: [*:0]const u8,
++    value: [*:0]const u8,
++};
++
++/// Common ABI-stable surface configuration used both by the embedding API
++/// and action payloads that request a new surface with explicit options.
++pub const SurfaceConfig = extern struct {
++    platform_tag: c_int = 0,
++    platform: SurfaceConfigPlatform = undefined,
++    userdata: ?*anyopaque = null,
++    scale_factor: f64 = 1,
++    font_size: f32 = 0,
++    working_directory: ?[*:0]const u8 = null,
++    command: ?[*:0]const u8 = null,
++    env_vars: ?[*]SurfaceConfigEnvVar = null,
++    env_var_count: usize = 0,
++    initial_input: ?[*:0]const u8 = null,
++    wait_after_command: bool = false,
++    context: NewSurfaceContext = .window,
++    backend: SurfaceConfigBackend = .exec,
++    tmux_mvp_source_surface: ?*anyopaque = null,
++    tmux_mvp_pane_id: usize = 0,
++    tmux_mvp_cols: usize = 0,
++    tmux_mvp_rows: usize = 0,
++};
++
+ pub fn shouldInheritWorkingDirectory(context: NewSurfaceContext, config: *const Config) bool {
+     return switch (context) {
+         .window => config.@"window-inherit-working-directory",
+diff --git a/src/terminal/tmux/layout.zig b/src/terminal/tmux/layout.zig
+index df1a53917..93cc50d62 100644
+--- a/src/terminal/tmux/layout.zig
++++ b/src/terminal/tmux/layout.zig
+@@ -84,6 +84,28 @@ pub const Layout = struct {
+         return root;
+     }
+ 
++    pub const FirstPane = struct {
++        id: usize,
++        cols: usize,
++        rows: usize,
++    };
++
++    pub fn firstPane(self: Layout) ?FirstPane {
++        switch (self.content) {
++            .pane => |id| return .{
++                .id = id,
++                .cols = self.width,
++                .rows = self.height,
++            },
++            .horizontal, .vertical => |children| {
++                for (children) |child| {
++                    if (child.firstPane()) |pane| return pane;
++                }
++                return null;
++            },
++        }
++    }
++
+     fn parseNext(
+         alloc: Allocator,
+         str: []const u8,
+diff --git a/src/terminal/tmux/viewer.zig b/src/terminal/tmux/viewer.zig
+index 62a0f1d00..c92273311 100644
+--- a/src/terminal/tmux/viewer.zig
++++ b/src/terminal/tmux/viewer.zig
+@@ -211,6 +211,13 @@ pub const Viewer = struct {
+         /// never reuses window IDs within a server process lifetime.
+         windows: []const Window,
+ 
++        /// Primary-screen visible bytes for a pane. This is used to seed a
++        /// tmux-backed surface with a static snapshot.
++        pane_snapshot: struct {
++            pane_id: usize,
++            data: []const u8,
++        },
++
+         pub fn format(self: Action, writer: *std.Io.Writer) !void {
+             const T = Action;
+             const info = @typeInfo(T).@"union";
+@@ -810,11 +817,21 @@ pub const Viewer = struct {
+                 content,
+             ),
+ 
+-            .pane_visible => |cap| try self.receivedPaneVisible(
+-                cap.screen_key,
+-                cap.id,
+-                content,
+-            ),
++            .pane_visible => |cap| {
++                try self.receivedPaneVisible(
++                    cap.screen_key,
++                    cap.id,
++                    content,
++                );
++                if (cap.screen_key == .primary) {
++                    try actions.append(arena_alloc, .{
++                        .pane_snapshot = .{
++                            .pane_id = cap.id,
++                            .data = try arena_alloc.dupe(u8, content),
++                        },
++                    });
++                }
++            },
+ 
+             .tmux_version => try self.receivedTmuxVersion(content),
+         }
+@@ -893,12 +910,16 @@ pub const Viewer = struct {
+             });
+         }
+ 
+-        // Setup our windows action so the caller can process GUI
+-        // window changes.
+-        try actions.append(arena_alloc, .{ .windows = windows.items });
+-
+-        // Sync up our layouts. This will populate unknown panes, prune, etc.
++        // Sync up our layouts first. This transfers the newly parsed
++        // windows into self.windows, which gives us stable storage for
++        // the action payload we emit below.
+         try self.syncLayouts(windows.items);
++
++        // Setup our windows action so the caller can process GUI
++        // window changes. We must reference self.windows here rather
++        // than the temporary local `windows` list because that storage
++        // is freed before the caller consumes the actions.
++        try actions.append(arena_alloc, .{ .windows = self.windows.items });
+     }
+ 
+     fn receivedPaneState(
+@@ -1650,6 +1671,25 @@ test "initial flow" {
+             .contains_tags = &.{ .windows, .command },
+             .contains_command = "capture-pane",
+             // pane_history for pane 0 (primary)
++            .check = (struct {
++                fn check(_: *Viewer, actions: []const Viewer.Action) anyerror!void {
++                    for (actions) |action| {
++                        if (action != .windows) continue;
++                        try testing.expectEqual(@as(usize, 1), action.windows.len);
++                        try testing.expectEqual(@as(usize, 0), action.windows[0].id);
++                        try testing.expectEqual(@as(usize, 83), action.windows[0].width);
++                        try testing.expectEqual(@as(usize, 44), action.windows[0].height);
++
++                        const first_pane = action.windows[0].layout.firstPane().?;
++                        try testing.expectEqual(@as(usize, 0), first_pane.id);
++                        try testing.expectEqual(@as(usize, 83), first_pane.cols);
++                        try testing.expectEqual(@as(usize, 20), first_pane.rows);
++                        return;
++                    }
++
++                    return error.MissingWindowsAction;
++                }
++            }).check,
+             .check_command = (struct {
+                 fn check(_: *Viewer, command: []const u8) anyerror!void {
+                     try testing.expect(std.mem.containsAtLeast(u8, command, 1, "-t %0"));
+diff --git a/src/termio.zig b/src/termio.zig
+index b16885109..bd8fd9d25 100644
+--- a/src/termio.zig
++++ b/src/termio.zig
+@@ -23,6 +23,7 @@ const message = @import("termio/message.zig");
+ pub const backend = @import("termio/backend.zig");
+ pub const mailbox = @import("termio/mailbox.zig");
+ pub const Exec = @import("termio/Exec.zig");
++pub const Tmux = @import("termio/Tmux.zig");
+ pub const Options = @import("termio/Options.zig");
+ pub const Termio = @import("termio/Termio.zig");
+ pub const Thread = @import("termio/Thread.zig");
+diff --git a/src/termio/Thread.zig b/src/termio/Thread.zig
+index ce4c1f4af..ba06d177c 100644
+--- a/src/termio/Thread.zig
++++ b/src/termio/Thread.zig
+@@ -351,6 +351,10 @@ fn drainMailbox(
+                     self.flags.linefeed_mode,
+                 );
+             },
++            .process_output => |v| {
++                defer v.alloc.free(v.data);
++                io.processOutput(v.data);
++            },
+         }
+     }
+ 
+diff --git a/src/termio/Tmux.zig b/src/termio/Tmux.zig
+new file mode 100644
+index 000000000..82b8371ac
+--- /dev/null
++++ b/src/termio/Tmux.zig
+@@ -0,0 +1,106 @@
++const std = @import("std");
++const Allocator = std.mem.Allocator;
++const assert = std.debug.assert;
++const renderer = @import("../renderer.zig");
++const terminal = @import("../terminal/main.zig");
++const termio = @import("../termio.zig");
++
++const Tmux = @This();
++
++pub const Config = struct {
++    pane_id: usize,
++};
++
++pane_id: usize,
++
++pub fn init(config: Config) Tmux {
++    return .{
++        .pane_id = config.pane_id,
++    };
++}
++
++pub fn deinit(self: *Tmux) void {
++    _ = self;
++}
++
++pub fn initTerminal(self: *Tmux, t: *terminal.Terminal) void {
++    _ = self;
++    _ = t;
++}
++
++pub fn threadEnter(
++    self: *Tmux,
++    alloc: Allocator,
++    io: *termio.Termio,
++    td: *termio.Termio.ThreadData,
++) !void {
++    _ = self;
++    _ = alloc;
++    _ = io;
++    td.backend = .{ .tmux = .{} };
++}
++
++pub fn threadExit(self: *Tmux, td: *termio.Termio.ThreadData) void {
++    _ = self;
++    assert(td.backend == .tmux);
++}
++
++pub fn focusGained(
++    self: *Tmux,
++    td: *termio.Termio.ThreadData,
++    focused: bool,
++) !void {
++    _ = self;
++    _ = focused;
++    assert(td.backend == .tmux);
++}
++
++pub fn resize(
++    self: *Tmux,
++    grid_size: renderer.GridSize,
++    screen_size: renderer.ScreenSize,
++) !void {
++    _ = self;
++    _ = grid_size;
++    _ = screen_size;
++}
++
++pub fn queueWrite(
++    self: *Tmux,
++    alloc: Allocator,
++    td: *termio.Termio.ThreadData,
++    data: []const u8,
++    linefeed: bool,
++) !void {
++    _ = self;
++    _ = alloc;
++    _ = data;
++    _ = linefeed;
++    assert(td.backend == .tmux);
++}
++
++pub fn childExitedAbnormally(
++    self: *Tmux,
++    gpa: Allocator,
++    t: *terminal.Terminal,
++    exit_code: u32,
++    runtime_ms: u64,
++) !void {
++    _ = self;
++    _ = gpa;
++    _ = t;
++    _ = exit_code;
++    _ = runtime_ms;
++}
++
++pub const ThreadData = struct {
++    pub fn deinit(self: *ThreadData, alloc: Allocator) void {
++        _ = self;
++        _ = alloc;
++    }
++
++    pub fn changeConfig(self: *ThreadData, config: *termio.DerivedConfig) void {
++        _ = self;
++        _ = config;
++    }
++};
+diff --git a/src/termio/backend.zig b/src/termio/backend.zig
+index ae0e2004f..a374989fa 100644
+--- a/src/termio/backend.zig
++++ b/src/termio/backend.zig
+@@ -10,28 +10,38 @@ const termio = @import("../termio.zig");
+ const WRITE_REQ_PREALLOC = std.math.pow(usize, 2, 5);
+ 
+ /// The kinds of backends.
+-pub const Kind = enum { exec };
++pub const Kind = enum { exec, tmux };
+ 
+ /// Configuration for the various backend types.
+ pub const Config = union(Kind) {
+     /// Exec uses posix exec to run a command with a pty.
+     exec: termio.Exec.Config,
++
++    /// Tmux mirrors pane content into an independently owned Terminal.
++    tmux: termio.Tmux.Config,
+ };
+ 
+ /// Backend implementations. A backend is responsible for owning the pty
+ /// behavior and providing read/write capabilities.
++///
++/// INVARIANT: Every method switch must handle all backend kinds with a safe
++/// implementation. If a method does not apply to a backend kind, it must be an
++/// explicit no-op or return a safe default.
+ pub const Backend = union(Kind) {
+     exec: termio.Exec,
++    tmux: termio.Tmux,
+ 
+     pub fn deinit(self: *Backend) void {
+         switch (self.*) {
+             .exec => |*exec| exec.deinit(),
++            .tmux => |*tmux| tmux.deinit(),
+         }
+     }
+ 
+     pub fn initTerminal(self: *Backend, t: *terminal.Terminal) void {
+         switch (self.*) {
+             .exec => |*exec| exec.initTerminal(t),
++            .tmux => |*tmux| tmux.initTerminal(t),
+         }
+     }
+ 
+@@ -43,12 +53,14 @@ pub const Backend = union(Kind) {
+     ) !void {
+         switch (self.*) {
+             .exec => |*exec| try exec.threadEnter(alloc, io, td),
++            .tmux => |*tmux| try tmux.threadEnter(alloc, io, td),
+         }
+     }
+ 
+     pub fn threadExit(self: *Backend, td: *termio.Termio.ThreadData) void {
+         switch (self.*) {
+             .exec => |*exec| exec.threadExit(td),
++            .tmux => |*tmux| tmux.threadExit(td),
+         }
+     }
+ 
+@@ -59,6 +71,7 @@ pub const Backend = union(Kind) {
+     ) !void {
+         switch (self.*) {
+             .exec => |*exec| try exec.focusGained(td, focused),
++            .tmux => |*tmux| try tmux.focusGained(td, focused),
+         }
+     }
+ 
+@@ -69,6 +82,7 @@ pub const Backend = union(Kind) {
+     ) !void {
+         switch (self.*) {
+             .exec => |*exec| try exec.resize(grid_size, screen_size),
++            .tmux => |*tmux| try tmux.resize(grid_size, screen_size),
+         }
+     }
+ 
+@@ -81,6 +95,7 @@ pub const Backend = union(Kind) {
+     ) !void {
+         switch (self.*) {
+             .exec => |*exec| try exec.queueWrite(alloc, td, data, linefeed),
++            .tmux => |*tmux| try tmux.queueWrite(alloc, td, data, linefeed),
+         }
+     }
+ 
+@@ -98,6 +113,12 @@ pub const Backend = union(Kind) {
+                 exit_code,
+                 runtime_ms,
+             ),
++            .tmux => |*tmux| try tmux.childExitedAbnormally(
++                gpa,
++                t,
++                exit_code,
++                runtime_ms,
++            ),
+         }
+     }
+ };
+@@ -105,15 +126,26 @@ pub const Backend = union(Kind) {
+ /// Termio thread data. See termio.ThreadData for docs.
+ pub const ThreadData = union(Kind) {
+     exec: termio.Exec.ThreadData,
++    tmux: termio.Tmux.ThreadData,
+ 
+     pub fn deinit(self: *ThreadData, alloc: Allocator) void {
+         switch (self.*) {
+             .exec => |*exec| exec.deinit(alloc),
++            .tmux => |*tmux| tmux.deinit(alloc),
+         }
+     }
+ 
+     pub fn changeConfig(self: *ThreadData, config: *termio.DerivedConfig) void {
+-        _ = self;
+-        _ = config;
++        switch (self.*) {
++            .exec => {},
++            .tmux => |*tmux| tmux.changeConfig(config),
++        }
+     }
+ };
++
++comptime {
++    const kind_fields = @typeInfo(Kind).@"enum".fields.len;
++    std.debug.assert(kind_fields == @typeInfo(@typeInfo(Config).@"union".tag_type.?).@"enum".fields.len);
++    std.debug.assert(kind_fields == @typeInfo(@typeInfo(Backend).@"union".tag_type.?).@"enum".fields.len);
++    std.debug.assert(kind_fields == @typeInfo(@typeInfo(ThreadData).@"union".tag_type.?).@"enum".fields.len);
++}
+diff --git a/src/termio/message.zig b/src/termio/message.zig
+index d7a59bf5e..936276018 100644
+--- a/src/termio/message.zig
++++ b/src/termio/message.zig
+@@ -82,6 +82,9 @@ pub const Message = union(enum) {
+     /// Write where the data is allocated and must be freed.
+     write_alloc: WriteReq.Alloc,
+ 
++    /// Feed output bytes into the owning Terminal via processOutput.
++    process_output: WriteReq.Alloc,
++
+     /// Return a write request for the given data. This will use
+     /// write_small if it fits or write_alloc otherwise. This should NOT
+     /// be used for stable pointers which can be manually set to write_stable.
+diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
+index 8c1b5b8ab..b8e111a48 100644
+--- a/src/termio/stream_handler.zig
++++ b/src/termio/stream_handler.zig
+@@ -2,6 +2,7 @@ const std = @import("std");
+ const builtin = @import("builtin");
+ const assert = @import("../quirks.zig").inlineAssert;
+ const Allocator = std.mem.Allocator;
++const CoreApp = @import("../App.zig");
+ const xev = @import("../global.zig").xev;
+ const apprt = @import("../apprt.zig");
+ const build_config = @import("../build_config.zig");
+@@ -135,6 +136,17 @@ pub const StreamHandler = struct {
+         }
+     }
+ 
++    inline fn appMessageWriter(
++        self: *StreamHandler,
++        msg: CoreApp.Message,
++    ) void {
++        if (self.surface_mailbox.app.push(msg, .{ .instant = {} }) == 0) {
++            self.renderer_state.mutex.unlock();
++            defer self.renderer_state.mutex.lock();
++            _ = self.surface_mailbox.app.push(msg, .{ .forever = {} });
++        }
++    }
++
+     inline fn messageWriter(self: *StreamHandler, msg: termio.Message) void {
+         self.termio_mailbox.send(msg, self.renderer_state.mutex);
+         self.termio_messaged = true;
+@@ -443,8 +455,51 @@ pub const StreamHandler = struct {
+                             ));
+                         },
+ 
+-                        .windows => {
+-                            // TODO
++                        .windows => |windows| {
++                            const source = self.surface_mailbox.surface;
++                            if (source.tmux_mvp.requested or windows.len == 0) continue;
++
++                            log.info(
++                                "tmux mvp windows action len={} first_id={} first_width={} first_height={}",
++                                .{
++                                    windows.len,
++                                    windows[0].id,
++                                    windows[0].width,
++                                    windows[0].height,
++                                },
++                            );
++
++                            const pane = windows[0].layout.firstPane() orelse {
++                                log.warn("tmux mvp windows action had no first pane", .{});
++                                continue;
++                            };
++
++                            log.info(
++                                "tmux mvp requesting pane_id={} cols={} rows={}",
++                                .{ pane.id, pane.cols, pane.rows },
++                            );
++                            source.tmux_mvp.requested = true;
++                            source.tmux_mvp.pane_id = pane.id;
++
++                            self.appMessageWriter(.{
++                                .new_tmux_window = .{
++                                    .source = source,
++                                    .pane_id = pane.id,
++                                    .cols = pane.cols,
++                                    .rows = pane.rows,
++                                },
++                            });
++                        },
++
++                        .pane_snapshot => |snapshot| {
++                            const source = self.surface_mailbox.surface;
++                            if (source.tmux_mvp.pane_id != snapshot.pane_id) continue;
++                            source.tmuxMvpStoreSnapshotLocked(snapshot.data) catch |err| {
++                                log.warn("failed to store tmux snapshot err={}", .{err});
++                            };
++                            source.tmuxMvpFlushPendingSnapshotLocked() catch |err| {
++                                log.warn("failed to flush tmux snapshot err={}", .{err});
++                            };
+                         },
+                     }
+                 }

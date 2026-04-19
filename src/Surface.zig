@@ -168,6 +168,26 @@ search: ?Search = null,
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.time.Instant = null,
 
+/// Temporary tmux MVP state for the source and target surfaces.
+tmux_mvp: TmuxMvpState = .{},
+
+pub const InitBackend = union(enum) {
+    exec,
+    tmux_mvp: struct {
+        source_surface: *Surface,
+        pane_id: usize,
+    },
+};
+
+const TmuxMvpState = struct {
+    requested: bool = false,
+    pane_id: ?usize = null,
+    target: ?*Surface = null,
+    pending_snapshot: ?[]u8 = null,
+    target_of: ?*Surface = null,
+    target_pane_id: ?usize = null,
+};
+
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
 /// input can be forwarded to the OS for further processing if it
@@ -463,6 +483,7 @@ pub fn init(
     app: *App,
     rt_app: *apprt.runtime.App,
     rt_surface: *apprt.runtime.Surface,
+    backend_init: InitBackend,
 ) !void {
     // Apply our conditional state. If we fail to apply the conditional state
     // then we log and attempt to move forward with the old config.
@@ -600,17 +621,25 @@ pub fn init(
         .io_thr = undefined,
         .size = size,
         .config = derived_config,
+        .tmux_mvp = switch (backend_init) {
+            .exec => .{},
+            .tmux_mvp => |tmux| .{
+                .target_of = tmux.source_surface,
+                .target_pane_id = tmux.pane_id,
+            },
+        },
 
         // Our conditional state is initialized to the app state. This
         // lets us get the most likely correct color theme and so on.
         .config_conditional_state = app.config_conditional_state,
     };
 
-    // The command we're going to execute
+    // The command we're going to execute. This is still useful outside of the
+    // exec backend path for title initialization logic.
     const command: ?configpkg.Command = command: {
         if (app.first) {
-            if (config.@"initial-command") |command| {
-                break :command command;
+            if (config.@"initial-command") |command_| {
+                break :command command_;
             }
         }
         break :command config.command;
@@ -620,42 +649,47 @@ pub fn init(
     // This separate block ({}) is important because our errdefers must
     // be scoped here to be valid.
     {
-        var env = rt_surface.defaultTermioEnv() catch |err| env: {
-            // If an error occurs, we don't want to block surface startup.
-            log.warn("error getting env map for surface err={}", .{err});
-            break :env internal_os.getEnvMap(alloc) catch
-                std.process.EnvMap.init(alloc);
-        };
-        errdefer env.deinit();
-
-        // don't leak GHOSTTY_LOG to any subprocesses
-        env.remove("GHOSTTY_LOG");
-
-        // Initialize our IO backend
-        var io_exec = try termio.Exec.init(alloc, .{
-            .command = command,
-            .env = env,
-            .env_override = config.env,
-            .shell_integration = config.@"shell-integration",
-            .shell_integration_features = config.@"shell-integration-features",
-            .cursor_blink = config.@"cursor-style-blink",
-            .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
-            .resources_dir = global_state.resources_dir.host(),
-            .term = config.term,
-            .rt_pre_exec_info = .init(config),
-            .rt_post_fork_info = .init(config),
-        });
-        errdefer io_exec.deinit();
-
         // Initialize our IO mailbox
         var io_mailbox = try termio.Mailbox.initSPSC(alloc);
         errdefer io_mailbox.deinit(alloc);
+
+        const backend: termio.Backend = switch (backend_init) {
+            .exec => exec: {
+                var env = rt_surface.defaultTermioEnv() catch |err| env: {
+                    // If an error occurs, we don't want to block surface startup.
+                    log.warn("error getting env map for surface err={}", .{err});
+                    break :env internal_os.getEnvMap(alloc) catch
+                        std.process.EnvMap.init(alloc);
+                };
+                errdefer env.deinit();
+
+                // don't leak GHOSTTY_LOG to any subprocesses
+                env.remove("GHOSTTY_LOG");
+
+                var io_exec = try termio.Exec.init(alloc, .{
+                    .command = command,
+                    .env = env,
+                    .env_override = config.env,
+                    .shell_integration = config.@"shell-integration",
+                    .shell_integration_features = config.@"shell-integration-features",
+                    .cursor_blink = config.@"cursor-style-blink",
+                    .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
+                    .resources_dir = global_state.resources_dir.host(),
+                    .term = config.term,
+                    .rt_pre_exec_info = .init(config),
+                    .rt_post_fork_info = .init(config),
+                });
+                errdefer io_exec.deinit();
+                break :exec .{ .exec = io_exec };
+            },
+            .tmux_mvp => |tmux| .{ .tmux = termio.Tmux.init(.{ .pane_id = tmux.pane_id }) },
+        };
 
         try termio.Termio.init(&self.io, alloc, .{
             .size = size,
             .full_config = config,
             .config = try termio.Termio.DerivedConfig.init(alloc, config),
-            .backend = .{ .exec = io_exec },
+            .backend = backend,
             .mailbox = io_mailbox,
             .renderer_state = &self.renderer_state,
             .renderer_wakeup = render_thread.wakeup,
@@ -771,9 +805,29 @@ pub fn init(
 
     // We are no longer the first surface
     app.first = false;
+
+    if (backend_init == .tmux_mvp) {
+        self.readonly = true;
+    }
 }
 
 pub fn deinit(self: *Surface) void {
+    if (self.tmux_mvp.target_of) |source| {
+        const pane_id = self.tmux_mvp.target_pane_id orelse 0;
+        const app_mailbox: App.Mailbox = .{ .rt_app = self.rt_app, .mailbox = &self.app.mailbox };
+        _ = app_mailbox.push(.{
+            .surface_message = .{
+                .surface = source,
+                .message = .{
+                    .tmux_mvp_target_closed = .{
+                        .pane_id = pane_id,
+                        .target = self,
+                    },
+                },
+            },
+        }, .{ .instant = {} });
+    }
+
     // Stop search thread
     if (self.search) |*s| s.deinit();
 
@@ -816,6 +870,7 @@ pub fn deinit(self: *Surface) void {
 
     // Clean up our render state
     if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
+    if (self.tmux_mvp.pending_snapshot) |snapshot| self.alloc.free(snapshot);
     self.alloc.destroy(self.renderer_state.mutex);
     self.config.deinit();
 
@@ -1149,7 +1204,46 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
                 .{ .selected = v },
             );
         },
+
+        .tmux_mvp_target_ready => |v| {
+            self.renderer_state.mutex.lock();
+            defer self.renderer_state.mutex.unlock();
+            self.tmux_mvp.pane_id = v.pane_id;
+            self.tmux_mvp.target = v.target;
+            try self.tmuxMvpFlushPendingSnapshotLocked();
+        },
+
+        .tmux_mvp_target_closed => |v| {
+            self.renderer_state.mutex.lock();
+            defer self.renderer_state.mutex.unlock();
+            if (self.tmux_mvp.target == v.target) {
+                self.tmux_mvp.target = null;
+            }
+        },
     }
+}
+
+pub fn tmuxMvpStoreSnapshotLocked(self: *Surface, data: []const u8) !void {
+    if (self.tmux_mvp.pending_snapshot) |snapshot| self.alloc.free(snapshot);
+    self.tmux_mvp.pending_snapshot = try self.alloc.dupe(u8, data);
+}
+
+pub fn tmuxMvpFlushPendingSnapshot(self: *Surface) !void {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+    try self.tmuxMvpFlushPendingSnapshotLocked();
+}
+
+pub fn tmuxMvpFlushPendingSnapshotLocked(self: *Surface) !void {
+    const target = self.tmux_mvp.target orelse return;
+    const snapshot = self.tmux_mvp.pending_snapshot orelse return;
+    self.tmux_mvp.pending_snapshot = null;
+    target.io.queueMessage(.{
+        .process_output = .{
+            .alloc = self.alloc,
+            .data = snapshot,
+        },
+    }, .unlocked);
 }
 
 fn selectionScrollTick(self: *Surface) !void {
@@ -1291,6 +1385,9 @@ fn childExitedAbnormally(
     // Build up our command for the error message
     const command = try std.mem.join(alloc, " ", switch (self.io.backend) {
         .exec => |*exec| exec.subprocess.args,
+        .tmux => &.{ "tmux", "pane", std.fmt.allocPrint(alloc, "{d}", .{
+            self.tmux_mvp.target_pane_id orelse self.tmux_mvp.pane_id orelse 0,
+        }) catch "0" },
     });
     const runtime_str = try std.fmt.allocPrint(alloc, "{d} ms", .{info.runtime_ms});
 

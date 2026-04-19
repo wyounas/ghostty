@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
+const CoreApp = @import("../App.zig");
 const xev = @import("../global.zig").xev;
 const apprt = @import("../apprt.zig");
 const build_config = @import("../build_config.zig");
@@ -132,6 +133,17 @@ pub const StreamHandler = struct {
             self.renderer_state.mutex.unlock();
             defer self.renderer_state.mutex.lock();
             _ = self.surface_mailbox.push(msg, .{ .forever = {} });
+        }
+    }
+
+    inline fn appMessageWriter(
+        self: *StreamHandler,
+        msg: CoreApp.Message,
+    ) void {
+        if (self.surface_mailbox.app.push(msg, .{ .instant = {} }) == 0) {
+            self.renderer_state.mutex.unlock();
+            defer self.renderer_state.mutex.lock();
+            _ = self.surface_mailbox.app.push(msg, .{ .forever = {} });
         }
     }
 
@@ -443,8 +455,51 @@ pub const StreamHandler = struct {
                             ));
                         },
 
-                        .windows => {
-                            // TODO
+                        .windows => |windows| {
+                            const source = self.surface_mailbox.surface;
+                            if (source.tmux_mvp.requested or windows.len == 0) continue;
+
+                            log.info(
+                                "tmux mvp windows action len={} first_id={} first_width={} first_height={}",
+                                .{
+                                    windows.len,
+                                    windows[0].id,
+                                    windows[0].width,
+                                    windows[0].height,
+                                },
+                            );
+
+                            const pane = windows[0].layout.firstPane() orelse {
+                                log.warn("tmux mvp windows action had no first pane", .{});
+                                continue;
+                            };
+
+                            log.info(
+                                "tmux mvp requesting pane_id={} cols={} rows={}",
+                                .{ pane.id, pane.cols, pane.rows },
+                            );
+                            source.tmux_mvp.requested = true;
+                            source.tmux_mvp.pane_id = pane.id;
+
+                            self.appMessageWriter(.{
+                                .new_tmux_window = .{
+                                    .source = source,
+                                    .pane_id = pane.id,
+                                    .cols = pane.cols,
+                                    .rows = pane.rows,
+                                },
+                            });
+                        },
+
+                        .pane_snapshot => |snapshot| {
+                            const source = self.surface_mailbox.surface;
+                            if (source.tmux_mvp.pane_id != snapshot.pane_id) continue;
+                            source.tmuxMvpStoreSnapshotLocked(snapshot.data) catch |err| {
+                                log.warn("failed to store tmux snapshot err={}", .{err});
+                            };
+                            source.tmuxMvpFlushPendingSnapshotLocked() catch |err| {
+                                log.warn("failed to flush tmux snapshot err={}", .{err});
+                            };
                         },
                     }
                 }

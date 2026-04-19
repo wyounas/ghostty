@@ -84,6 +84,28 @@ pub const Layout = struct {
         return root;
     }
 
+    pub const FirstPane = struct {
+        id: usize,
+        cols: usize,
+        rows: usize,
+    };
+
+    pub fn firstPane(self: Layout) ?FirstPane {
+        switch (self.content) {
+            .pane => |id| return .{
+                .id = id,
+                .cols = self.width,
+                .rows = self.height,
+            },
+            .horizontal, .vertical => |children| {
+                for (children) |child| {
+                    if (child.firstPane()) |pane| return pane;
+                }
+                return null;
+            },
+        }
+    }
+
     fn parseNext(
         alloc: Allocator,
         str: []const u8,
