@@ -308,8 +308,8 @@ fn newTmuxWindow(self: *App, rt_app: *apprt.App, msg: Message.NewTmuxWindow) !vo
     if (!self.hasSurface(msg.source)) return;
 
     log.info(
-        "new tmux window source={} pane_id={} cols={} rows={}",
-        .{ msg.source, msg.pane_id, msg.cols, msg.rows },
+        "new tmux window pane_id={} cols={} rows={}",
+        .{ msg.pane_id, msg.cols, msg.rows },
     );
 
     var config = msg.source.rt_surface.newSurfaceOptions(.window);

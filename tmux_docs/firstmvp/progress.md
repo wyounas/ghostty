@@ -1,16 +1,16 @@
 # First MVP Progress Handoff
 
-Last updated: 2026-04-16
+Last updated: 2026-04-21
 
 This document captures the current state of the `tmux -CC` first-MVP work so a
 future Codex session can resume without re-discovering the same issues. The
 source-of-truth task spec was moved to
-`tmux_docs/first_mvp/firstmvp.md`.
+`tmux_docs/firstmvp/firstmvp.md`.
 
 ## Scope We Implemented
 
 The session implemented the first MVP described in
-`tmux_docs/first_mvp/firstmvp.md`: when Ghostty is launched into tmux control
+`tmux_docs/firstmvp/firstmvp.md`: when Ghostty is launched into tmux control
 mode, the `.windows` action from the tmux viewer should create a second native
 Ghostty surface/window for the first tmux pane, and that new surface should
 bootstrap with a static snapshot of pane contents.
@@ -473,7 +473,7 @@ places where the previous attempt had drifted from the design doc, and then
 validating the path on macOS with the actual app bundle rather than relying on
 `zig build` alone.
 
-### 1. Faithfulness review against `tmux_docs/first_mvp/firstmvp.md`
+### 1. Faithfulness review against `tmux_docs/firstmvp/firstmvp.md`
 
 I first re-audited the current implementation against the first MVP document
 and the previous progress log.
@@ -1023,3 +1023,603 @@ Treat the following as still-open follow-up items even if the above passes:
 - proving the child window is static/read-only,
 - investigating intermittent crash/stability behavior,
 - verifying repeated create/teardown cycles.
+
+## 2026-04-21 Crash Investigation Follow-up
+
+This entry captures the follow-up crash investigation after the validation docs
+and logs were moved under `tmux_docs/firstmvp/`:
+
+- validation flow:
+  - `tmux_docs/firstmvp/validation/validat_w_build_nu.md`
+- captured crash logs:
+  - `tmux_docs/firstmvp/validation/crash_log_w_build_nu.md`
+
+### Work log
+
+We started with the manual validation flow from
+`tmux_docs/firstmvp/validation/validat_w_build_nu.md`, then inspected the captured runtime
+logs in `tmux_docs/firstmvp/validation/crash_log_w_build_nu.md`.
+
+That log already showed the tmux control-mode path reaching:
+
+- tmux control mode entry
+- `.windows` handling
+- `tmux mvp requesting pane_id=0 cols=80 rows=24`
+- `debug(app): mailbox message=new_tmux_window`
+
+Because the mailbox handoff was clearly happening, the next step was to stop
+assuming the crash lived in the parser/viewer path and instead investigate the
+app-thread/new-window handoff.
+
+From there we:
+
+- rebuilt the Zig core with `zig build -Demit-macos-app=false`
+- reran the targeted tmux tests with
+  `zig build test -Dtest-filter=tmux -Demit-macos-app=false`
+- rebuilt the macOS app with
+  `macos/build.nu --scheme Ghostty --configuration Debug --action build`
+- confirmed the validation flow can be automated, not just run manually
+- launched the built Ghostty binary under LLDB using the same deterministic
+  tmux launcher shape as the validation doc
+- captured a crash-time backtrace
+
+LLDB showed the crash is an `EXC_BAD_ACCESS` on the main thread while building
+the `newTmuxWindow` log message in `src/App.zig`. The fault is not in tmux
+parsing or child-surface startup yet; it is the logging itself. The previous
+log line formatted `msg.source` with `{}`, which recursively tried to print a
+`*Surface` and eventually hit a null pointer inside formatting.
+
+Current root-cause assessment:
+
+- immediate crash cause:
+  - unsafe formatting of `msg.source` in `App.newTmuxWindow`
+- not yet implicated by this crash:
+  - tmux control-mode parsing
+  - `.windows` action handling
+  - app mailbox delivery of `new_tmux_window`
+  - tmux child-surface backend init
+
+Immediate implementation step chosen from this investigation:
+
+- remove the unsafe `msg.source` formatting from the `newTmuxWindow` log
+- rerun the same automated validation flow to discover the next real blocker,
+  if one remains
+
+### Plan: Investigate tmux MVP Crash After `new_tmux_window`
+
+#### Summary
+
+The current log already rules out the tmux parser/viewer path as the primary
+failure. The run reaches:
+
+- tmux control mode entry
+- `.windows` emission with sane data
+- `tmux mvp requesting pane_id=0 cols=80 rows=24`
+- `debug(app): mailbox message=new_tmux_window`
+
+The crash happens immediately after that handoff. The investigation should now
+target the new tmux child-surface creation path, not the tmux control protocol
+path.
+
+The most likely crash zone is the tmux-backed surface creation flow triggered by
+`new_tmux_window`, with the highest-probability fault inside the embedded
+runtime handoff before or during child surface initialization. The strongest
+specific suspect was the `tmux_mvp_source_surface` pointer handoff/cast in
+`src/apprt/embedded.zig`, because it executes before the second surface would
+emit its normal initialization logs.
+
+#### Key Findings So Far
+
+- The old assumption from `firstmvp/progress.md` that the app mailbox handoff
+  was not happening is no longer true. The log contains
+  `debug(app): mailbox message=new_tmux_window`, so the app thread is receiving
+  the request.
+- The crash happens before there is evidence of a successfully initialized
+  second surface.
+  - No second surface startup logs appear.
+  - No log confirms completion of `newTmuxWindow(...)`.
+  - No log confirms successful native window creation.
+- This makes the failure window:
+  1. `App.newTmuxWindow(...)`
+  2. `rt_app.performAction(..., .new_window_with_surface_config, ...)`
+  3. Swift `ghosttyNewWindow` handling
+  4. `TerminalController.newWindow(...)` / `SurfaceView` construction
+  5. `ghostty_surface_new(...)` / `src/apprt/embedded.zig` tmux-specific branch
+
+#### Primary Hypotheses
+
+1. Most likely: crash/trap during tmux child surface creation in
+   `src/apprt/embedded.zig`.
+   - Focus on the tmux-only branch that:
+     - sets `window-width` / `window-height`
+     - converts `tmux_mvp_source_surface`
+     - performs `@ptrCast(@alignCast(...))`
+     - builds `CoreSurface.InitBackend`
+   - Reason: this code runs before the second surface would emit its normal core
+     init logs, matching the current evidence.
+
+2. Second likely: crash during Swift-side new-window flow before or around
+   `ghostty_surface_new(...)`.
+   - Focus on:
+     - `Ghostty.App.swift` `newWindow(..., config:)`
+     - `AppDelegate.ghosttyNewWindow(_:)`
+     - `TerminalController.newWindow(...)`
+     - `SurfaceView` initialization with tmux `SurfaceConfiguration`
+   - Reason: this is the path immediately downstream of `new_tmux_window`.
+
+3. Third likely: assertion/trap during tmux child IO/backend startup after the
+   second surface is created.
+   - Focus on:
+     - `src/termio/Tmux.zig`
+     - `src/termio/Thread.zig`
+     - early mailbox messages like `focused`, `resize`, `color_scheme_report`
+   - Reason: this is plausible, but less likely because there are no clear
+     child-surface startup logs before the crash.
+
+#### Investigation Steps
+
+1. Capture an LLDB backtrace on the same validation command.
+   - Run the exact `validation/validat_w_build_nu.md` launch path under LLDB.
+   - Stop on crash and record:
+     - signal / exception type
+     - top 20 frames
+     - the crashing thread
+   - If the trap is a Zig safety trap or Swift precondition/assertion, record
+     the exact function and source line.
+
+2. Map the backtrace to one of the three hypotheses above.
+   - If the crash is in `embedded.zig`, treat the pointer/config handoff as root
+     cause.
+   - If it is in Swift window/surface creation, treat the macOS runtime bridge
+     as root cause.
+   - If it is in `Tmux.zig` / `Thread.zig` / `Termio`, treat child startup
+     invariants as root cause.
+
+3. Add minimal temporary logs only if the backtrace is still ambiguous.
+   - Add one log at entry to `App.newTmuxWindow(...)`.
+   - Add one log immediately before
+     `rt_app.performAction(... .new_window_with_surface_config ...)`.
+   - Add one log at entry to `embedded.Surface.init(...)` tmux branch.
+   - Add one log immediately before and after the `tmux_mvp_source_surface`
+     cast.
+   - Add one log immediately after `self.core_surface.init(...)` succeeds.
+   - Add one log in Swift `ghosttyNewWindow(_:)` and
+     `TerminalController.newWindow(...)`.
+   - Do not add broad logging elsewhere; keep the probe confined to the handoff
+     chain.
+
+4. Use the result to classify the root cause and choose the fix path.
+   - If pointer/cast bug:
+     - verify the exact type and lifetime of `tmux_mvp_source_surface`
+     - replace fragile cast assumptions with explicit validation
+     - add a guard/error path instead of trapping
+   - If action/runtime bridge bug:
+     - validate `new_window_with_surface_config` payload integrity through the
+       C/Swift boundary
+     - verify the `SurfaceConfiguration` fields survive NotificationCenter
+       transport unchanged
+   - If child startup bug:
+     - harden tmux backend startup invariants
+     - validate thread-data initialization before focus/resize/config messages
+       are processed
+
+#### Test Plan
+
+- Re-run the exact manual validation from
+  `tmux_docs/firstmvp/validation/validat_w_build_nu.md`.
+- Confirm one of these outcomes after the fix:
+  - no crash, and logs show the tmux child surface/window path completes
+  - or, if creation still fails, Ghostty logs a handled error instead of
+    crashing
+- Preserve existing passing checks:
+  - `zig build -Demit-macos-app=false`
+  - `zig build test -Dtest-filter=tmux -Demit-macos-app=false`
+  - `zig build test -Dtest-filter='initial flow' -Demit-macos-app=false`
+
+#### Assumptions
+
+- `tmux_docs/firstmvp/validation/crash_log_w_build_nu.md` is from the current tmux MVP
+  codepath and not from a stale app bundle.
+- sentry’s “crash has been captured” indicates a real process crash/trap, not
+  just an unrelated warning.
+- The current log is sufficient to deprioritize tmux parser/viewer work until
+  the child-surface creation path is stabilized.
+
+### Plan: Investigate and Unblock tmux MVP Crash
+
+#### Summary
+
+The crash is reproducible automatically from the same validation flow described
+in `tmux_docs/firstmvp/validation/validat_w_build_nu.md`, so this does not need to stay
+manual.
+
+I inspected the existing evidence in
+`tmux_docs/firstmvp/validation/crash_log_w_build_nu.md`, rebuilt the macOS app, and reran
+the validation under LLDB. The key result is that the current crash is not in
+tmux control-mode parsing, window-list handling, or the tmux child-surface
+startup path. The process crashes earlier, inside `App.newTmuxWindow`, while
+constructing an info log message.
+
+The concrete root cause is the log line in `src/App.zig` that formats
+`msg.source` with `{}`. Formatting that `*Surface` recursively walks into
+internal fields and hits a null pointer during string construction, producing
+`EXC_BAD_ACCESS` in `memcpy`. That means the crash is currently a logging crash,
+not yet a tmux-runtime logic crash.
+
+#### What Was Investigated
+
+- Read the validation steps in `tmux_docs/firstmvp/validation/validat_w_build_nu.md`.
+- Read the existing runtime evidence in
+  `tmux_docs/firstmvp/validation/crash_log_w_build_nu.md`.
+- Confirmed the earlier mailbox handoff assumption is outdated because the logs
+  already show:
+  - tmux control mode starts
+  - `.windows` is parsed
+  - `tmux mvp requesting pane_id=0 cols=80 rows=24`
+  - `debug(app): mailbox message=new_tmux_window`
+- Built and tested the current branch with:
+  - `zig build -Demit-macos-app=false`
+  - `zig build test -Dtest-filter=tmux -Demit-macos-app=false`
+  - `macos/build.nu --scheme Ghostty --configuration Debug --action build`
+- Automated the validation flow with the same shape as the doc, using a small
+  `/tmp` script and launching Ghostty under LLDB.
+- Captured the backtrace at crash time. The relevant frames point to:
+  - `src/App.zig:310` inside `App.newTmuxWindow`
+  - logging/formatting code
+  - `memcpy` with `src = 0x0`
+
+#### Root Cause
+
+The immediate crash is caused by this behavior in `App.newTmuxWindow`:
+
+- A log line prints `msg.source` using `{}`.
+- `msg.source` is a `*Surface`.
+- Zig formatting tries to pretty-print the referenced surface internals.
+- That formatting path reaches a null internal pointer and crashes while
+  building the log string.
+
+So the first blocker is:
+
+- unsafe logging of `msg.source` in `App.newTmuxWindow`
+
+Not the first blocker:
+
+- tmux control-mode parser
+- `.windows` action handling
+- mailbox delivery of `new_tmux_window`
+- tmux child surface backend initialization
+
+#### Implementation Changes
+
+1. Remove or narrow the crashing log in `src/App.zig`.
+   - Do not format `msg.source` with `{}`.
+   - Replace it with a safe form:
+     - either omit `source` entirely
+     - or log only scalar fields like `pane_id`, `cols`, and `rows`
+     - or log a pointer address in a way that does not recurse into `Surface`
+
+2. Re-run the same automated validation flow after that change.
+   - Use the same validation sequence already proven reproducible.
+   - Run under LLDB again first so the next failure point is captured
+     immediately if another crash remains.
+
+3. If the logging crash is cleared, inspect the next stage only.
+   - Add minimal temporary logs, only if needed, at:
+     - entry to `App.newTmuxWindow`
+     - before `rt_app.performAction(... .new_window_with_surface_config ...)`
+     - entry to the tmux branch in `src/apprt/embedded.zig`
+     - after `core_surface.init(...)`
+   - Keep those logs scalar-only. Do not print whole structs like `Surface`.
+
+4. Classify the next failure based on the post-fix run.
+   - If no crash occurs, continue with tmux child-window behavior validation.
+   - If a new crash appears, use the next LLDB backtrace to determine whether it
+     is:
+     - app/runtime bridge
+     - embedded surface init
+     - tmux child backend startup
+
+#### Test Plan
+
+- Re-run:
+  - `zig build -Demit-macos-app=false`
+  - `zig build test -Dtest-filter=tmux -Demit-macos-app=false`
+  - `macos/build.nu --scheme Ghostty --configuration Debug --action build`
+- Re-run the automated validation equivalent of
+  `tmux_docs/firstmvp/validation/validat_w_build_nu.md`.
+- Launch the same Ghostty command under LLDB and confirm:
+  - the old crash at `App.newTmuxWindow` logging is gone
+  - either a tmux child window is created successfully, or the next real failure
+    point is captured
+- Preserve the existing signal from the logs that `new_tmux_window` is reaching
+  the app thread.
+
+#### Assumptions
+
+- `tmux_docs/firstmvp/validation/crash_log_w_build_nu.md` reflects the current branch
+  behavior before the LLDB confirmation work.
+- The recommended first implementation step is to remove the unsafe
+  `msg.source` formatting before doing any broader tmux-path debugging, because
+  the current crash prevents observing the real next stage.
+
+### Implementation and validation result
+
+The immediate unblock from the plan above was implemented in `src/App.zig`:
+
+- `App.newTmuxWindow` no longer formats `msg.source` with `{}`
+- the log now records only scalar fields:
+  - `pane_id`
+  - `cols`
+  - `rows`
+
+That change was followed by a fresh validation pass using the moved validation
+doc under `tmux_docs/firstmvp/`.
+
+Commands run:
+
+```bash
+zig build -Demit-macos-app=false
+zig build test -Dtest-filter=tmux -Demit-macos-app=false
+zig build test -Dtest-filter='initial flow' -Demit-macos-app=false
+macos/build.nu --scheme Ghostty --configuration Debug --action build
+```
+
+The tmux validation was then rerun automatically with the same deterministic
+launcher shape used by `tmux_docs/firstmvp/validation/validat_w_build_nu.md`:
+
+- create `/tmp/ghostty_tmux_mvp.sh`
+- clear the dedicated `ghostty_mvp` tmux server
+- launch the built Ghostty binary under LLDB with:
+  - `--quit-after-last-window-closed=true`
+  - `--initial-command=direct:/tmp/ghostty_tmux_mvp.sh`
+
+Observed results after the fix:
+
+- the previous `EXC_BAD_ACCESS` in `App.newTmuxWindow` did not reproduce
+- the app stayed alive through the `new_tmux_window` handoff
+- runtime behavior now shows the child path continuing far enough to create a
+  second live Ghostty window
+- AppleScript window counting returned `2`
+- AppleScript window ids showed two distinct windows
+- the automated validation therefore confirms that the immediate crash blocker
+  was the unsafe `msg.source` log formatting
+
+Current status after this validation:
+
+- tmux control mode enters successfully
+- `.windows` handling reaches the app thread
+- `new_tmux_window` no longer crashes the app
+- a second native Ghostty window is created
+
+What still remains open for the first MVP:
+
+- confirm the second window is seeded with the intended pane snapshot content
+- confirm the tmux child window is static/read-only in practice
+- investigate the `IOSurfaceLayer: surface is wrong size for layer, discarding`
+  warnings seen during the successful run
+- validate repeated create/teardown cycles so the path is stable, not just
+  successful once
+
+### Plan: Close Out tmux First MVP
+
+#### Summary
+
+Cross-checking the current code against `tmux_docs/firstmvp/firstmvp.md` shows
+that the architectural MVP work is largely in place already:
+
+- the `.tmux` backend exists
+- the first pane triggers `new_tmux_window`
+- the child surface is created as a separate native window
+- the child surface is forced into `readonly`
+- the source surface stores a pane snapshot and flushes it into the child via
+  `process_output`
+- no live `%output` path currently forwards later tmux output into the child
+
+So the remaining work is not “finish the architecture.” It is:
+
+1. prove that the child window actually shows the intended snapshot content
+2. prove that it stays static after the source pane changes
+3. prove that input into the child is ignored in practice
+4. classify the `IOSurfaceLayer: surface is wrong size for layer, discarding`
+   warnings as either:
+   - harmless startup noise for this MVP, or
+   - a real rendering bug that still blocks the MVP
+
+The plan should therefore be validation-first, with code changes only where the
+validation disproves the current assumptions.
+
+#### Key Changes
+
+##### 1. Add a deterministic MVP validation flow that proves behavior, not just window count
+
+Use the existing `tmux_docs/firstmvp/validation/validat_w_build_nu.md` flow as the base,
+but tighten it into a deterministic scenario with explicit marker text and
+scriptable verification.
+
+Validation scenario:
+
+- launch tmux control mode with a named tmux session on a dedicated socket
+- initial command prints an early marker such as `SNAP_A`
+- sleep long enough for Ghostty to create the child window and flush the
+  snapshot
+- then print a late marker such as `LIVE_B`
+- keep the shell alive
+
+Use this shape for the tmux launcher:
+
+- `tmux -L ghostty_mvp -f /dev/null -CC new-session -s mvp "printf 'SNAP_A\n'; sleep 3; printf 'LIVE_B\n'; exec ${SHELL:-/bin/zsh} -l"`
+
+Use existing AppleScript support instead of adding new scripting APIs:
+
+- enumerate Ghostty windows/terminals
+- run `perform action "select_all"` on a terminal
+- run `perform action "copy_to_clipboard"` on that terminal
+- read the result with `pbpaste`
+
+This avoids screenshots and avoids adding new inspection interfaces.
+
+##### 2. Validate the four remaining MVP requirements in a fixed order
+
+Snapshot seeded correctly:
+
+- after the second window appears, copy terminal contents from both Ghostty
+  windows using AppleScript
+- identify the child window as the one that:
+  - contains `SNAP_A`
+  - does not contain `LIVE_B` after the source pane has already advanced
+- if neither window matches that shape, treat snapshot seeding as broken
+
+Static snapshot:
+
+- confirm externally with tmux that the source pane contains both `SNAP_A` and
+  `LIVE_B`
+- copy the child window contents again after `LIVE_B` appears
+- require that the child still contains `SNAP_A` and still does not contain
+  `LIVE_B`
+- if the child now includes `LIVE_B`, the current implementation is not static
+  and must be fixed
+
+Read-only in practice:
+
+- send input to the child terminal with existing AppleScript commands:
+  - `input text`
+  - `send key "return"`
+- use `tmux capture-pane -p -t mvp:0.0` on the dedicated tmux socket to inspect
+  the actual tmux source pane
+- require that the injected marker text never appears in tmux
+- if it does appear, input is leaking somewhere and the MVP is not read-only
+
+Repeated stability:
+
+- run the full scenario at least 5 times from a clean tmux server
+- require all 5 runs to satisfy:
+  - no crash
+  - window count = 2
+  - snapshot child identified successfully
+  - child remains static
+  - child input does not affect tmux
+- if failures are intermittent, treat the MVP as not done
+
+##### 3. Only if validation fails, fix the specific failing path
+
+If snapshot seeding fails:
+
+- focus only on the snapshot handoff chain:
+  - `stream_handler.zig` `.pane_snapshot`
+  - `Surface.tmuxMvpStoreSnapshotLocked`
+  - `Surface.tmuxMvpFlushPendingSnapshotLocked`
+  - target child `process_output`
+- do not redesign the backend
+- keep the current `process_output` bootstrap model
+- add narrow scalar logs only around:
+  - snapshot received
+  - snapshot stored
+  - target ready
+  - snapshot flushed
+  - target `process_output` queued
+
+If static behavior fails:
+
+- treat that as a logic bug, because the MVP doc requires a static snapshot
+- do not forward `%output` into the child surface in the first MVP
+- keep later tmux `%output` updates confined to the source/viewer side only
+- if the child is updating, find and remove the unexpected forwarding path
+  rather than adding buffering logic
+
+If read-only fails:
+
+- treat that as a bug, not missing functionality
+- preserve `self.readonly = true` for tmux child surfaces
+- preserve `queueIo` dropping `write_*` messages
+- inspect any input path that bypasses `queueIo`
+- if a path bypasses it, route it through the same readonly gate or explicitly
+  reject it for tmux children
+
+If the `IOSurfaceLayer` warning correlates with bad rendering:
+
+- only then make it a blocking code fix
+- inspect the first child-window sizing path in `src/apprt/embedded.zig` and
+  `src/Surface.zig`
+- compare requested tmux grid size against the first actual layer size and first
+  render size
+- if snapshot render is happening before the native window has a stable size,
+  defer snapshot flush until after the child surface has received its first
+  settled resize
+- do not change the tmux backend model just to silence a warning
+
+If the warning does not affect copied content, static behavior, or stability:
+
+- document it as non-blocking for first MVP
+- defer it to the next phase
+
+#### Test Plan
+
+Run these checks for every validation pass:
+
+- `zig build -Demit-macos-app=false`
+- `zig build test -Dtest-filter=tmux -Demit-macos-app=false`
+- `zig build test -Dtest-filter='initial flow' -Demit-macos-app=false`
+- `macos/build.nu --scheme Ghostty --configuration Debug --action build`
+
+Then run a scripted macOS MVP validation that:
+
+- creates the deterministic tmux launcher
+- clears the dedicated tmux server
+- launches the built `Ghostty.app`
+- waits for 2 windows
+- copies text from both windows via AppleScript `select_all` +
+  `copy_to_clipboard`
+- identifies source vs child by presence/absence of `LIVE_B`
+- injects input into the child terminal via AppleScript
+- verifies with `tmux capture-pane` that tmux did not change
+- repeats the full cycle 5 times
+
+Acceptance criteria for calling first MVP done:
+
+- child window exists every run
+- child copied contents contain `SNAP_A`
+- child copied contents never gain `LIVE_B`
+- tmux source pane never receives injected child input
+- no crash across 5 clean runs
+- any remaining `IOSurfaceLayer` warning is shown to be non-blocking by the
+  copied-content checks
+
+#### Assumptions and Defaults
+
+- Default decision: do not add new public scripting or debug APIs unless the
+  existing AppleScript + clipboard path proves insufficient.
+- Default decision: the first MVP is complete once snapshot-visible, static, and
+  read-only behavior are all proven, not merely inferred from code.
+- Default decision: `IOSurfaceLayer` warnings are only a first-MVP blocker if
+  they cause missing content, wrong content, clipped content, or instability.
+- Default decision: keep the first MVP single-pane and snapshot-only; do not
+  expand scope into live updates, input forwarding, resize propagation back into
+  tmux, or multi-pane rendering.
+
+## 2026-04-21 23:48:15 PKT
+
+### Work log
+
+- Reviewed the latest full MVP manual-validation run against the Ghostty logs
+  and the tmux pane state.
+- Confirmed the snapshot race is fixed in the good run shape: the logs showed
+  `.pane_snapshot` containing `FULLMVP_SNAP_A`, followed by child
+  `process_output`, and later `%output` for `FULLMVP_LIVE_B` only on the source
+  tmux pane.
+- Identified the main invalidation in the user run as environment setup rather
+  than tmux MVP behavior: Ghostty reported `3` windows, and earlier logs still
+  showed `window-save-state = default`, which is consistent with restored or
+  preexisting Ghostty windows contaminating the check.
+- Re-reviewed `tmux_docs/firstmvp/validation/fullmvp_manual_validation.md` for correctness
+  and tightened the flow so it now starts from a clean Ghostty state.
+- Added an explicit preflight to quit Ghostty and verify no leftover
+  Ghostty process exists before starting the validation.
+- Updated the launch command to include `--window-save-state=never` so restored
+  windows cannot affect the run.
+- Tightened the window-count requirement so anything other than exactly `2`
+  windows invalidates the run and requires restarting from a clean slate.
+- Rechecked and corrected the step numbering and internal references in the
+  manual validation doc, and kept the tmux prepopulation requirement that
+  `FULLMVP_SNAP_A` must already exist before Ghostty attaches.
+- Net result: the manual validation instructions are now stricter, cleaner, and
+  aligned with the actual failure mode observed in the logs.

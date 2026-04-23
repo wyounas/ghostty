@@ -1,0 +1,33 @@
+breakpoint set --file Exec.zig --line 91
+breakpoint set --file Exec.zig --line 138
+breakpoint set --file Exec.zig --line 1298
+
+breakpoint set --file dcs.zig --line 60
+breakpoint set --file dcs.zig --line 63
+
+breakpoint set --file stream_handler.zig --line 398
+breakpoint set --file stream_handler.zig --line 401
+breakpoint set --file stream_handler.zig --line 458
+breakpoint set --file stream_handler.zig --line 472
+breakpoint set --file stream_handler.zig --line 484
+breakpoint set --file stream_handler.zig --line 494
+
+breakpoint set --file App.zig --line 250
+breakpoint set --file App.zig --line 307
+
+breakpoint set --file embedded.zig --line 537
+breakpoint set --file embedded.zig --line 550
+breakpoint set --file embedded.zig --line 568
+
+breakpoint set --file Surface.zig --line 685
+breakpoint set --file Surface.zig --line 688
+breakpoint set --file Surface.zig --line 1208
+breakpoint set --file Surface.zig --line 1226
+breakpoint set --file Surface.zig --line 1237
+breakpoint set --file Surface.zig --line 1241
+
+breakpoint set --file viewer.zig --line 826
+breakpoint set --file viewer.zig --line 828
+
+breakpoint set --file Thread.zig --line 354
+breakpoint set --file Thread.zig --line 356

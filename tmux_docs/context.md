@@ -4,11 +4,13 @@
 
 This documentation captures an in-depth analysis of adding **tmux control mode** (`tmux -CC`) support to [Ghostty](https://github.com/ghostty-org/ghostty), a GPU-accelerated terminal emulator written in Zig. The goal is to make tmux windows appear as native Ghostty tabs and tmux panes as native splits — the same experience iTerm2 provides today. As of this writing, Ghostty parses the tmux control protocol and builds internal state (Terminals per pane), but the final step — creating native Surfaces from that state — is not yet wired up (the `.windows` action is dropped at a `// TODO`).
 
+Act as a senior engineer with decades of experience with terminals, Zig, and Tmux. 
+
 ## How to Use These Docs With an LLM
 
 1. **Start with this file** to understand what each document covers.
 2. **Load `smallestmvp.md`** for the master experiment guide — it explains the full data path, threading model, and where the system breaks.
-3. **Load `progress.md`** to see what's been done and what's next.
+3. **Load `progress.md`** to see what's been done and what's next. (there are two, tmux_docs/progress.md and tmux_docs/firstmvp/progress.md)
 4. **Load `analysis/tmux-control-mode.diff`** if you want to apply the diagnostic log changes to the Ghostty source and reproduce the instrumented runs.
 5. Load other files as needed based on what you're working on (architecture, specific file details, diagrams, etc.).
 
@@ -16,7 +18,10 @@ The diff should be applied to Ghostty `main` branch at commit `0790937d0`.
 
 ## File Index
 
-### Root (`docs/`)
+Please read every line of evrey document under tmux_docs/ and tmux_docs/firstmvp and tmux_docs/validation and tmux_docs/analysis.
+
+
+### Root (`tmux_docs/`)
 
 | File | Description |
 |------|-------------|
@@ -35,7 +40,7 @@ The diff should be applied to Ghostty `main` branch at commit `0790937d0`.
 | `progress.md` | Progress tracker: branch state (`smallestmvp` off `main` at `0790937d0`), 6 modified source files with what each log addition does, experiment results, and next steps |
 | `*.pdf` | PDF renders of the corresponding `.md` files (dataflow, diagrams, overview, plan, prose) |
 
-### Analysis (`docs/analysis/`)
+### Analysis (`tmux_docs/analysis/`)
 
 | File | Description |
 |------|-------------|
@@ -43,3 +48,6 @@ The diff should be applied to Ghostty `main` branch at commit `0790937d0`.
 | `sequence_diagram.md` | ASCII sequence diagrams showing a complete command round-trip (version query) through all 7 source files: stream_handler sends command -> Exec reads PTY -> control.zig parses block -> dcs.zig wraps notification -> viewer.zig processes response -> stream_handler sends next command. Also includes a condensed full-session view |
 | `ghostty.log` | Raw Ghostty debug log from the April 8 instrumented run. Contains 365 total log lines (165 GHY-prefixed diagnostic lines across 7 source files). Can be used to verify analysis claims or as input for further analysis |
 | `tmux-control-mode.diff` | Git diff of all 6 modified Zig source files (92 insertions, 8 deletions). Apply to Ghostty `main` at commit `0790937d0` with `git apply` to reproduce the instrumented build. Changes are debug log additions only — no functional changes |
+
+
+There is also tmux_docs/validation containing data and infomration on how we've validated the first mvp. 
