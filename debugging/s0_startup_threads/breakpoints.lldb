@@ -1,0 +1,32 @@
+# Teach the first practical Ghostty macOS app-code startup line.
+breakpoint set --file macos/Sources/App/macOS/main.swift --line 8
+
+# Teach where AppKit hands startup into the app delegate's own initializer.
+breakpoint set --file macos/Sources/App/macOS/AppDelegate.swift --line 164
+
+# Teach where app-finish-launching work begins.
+breakpoint set --file macos/Sources/App/macOS/AppDelegate.swift --line 203
+
+# Teach the macOS handoff from the Swift app thread into Zig app work.
+breakpoint set --file macos/Sources/Ghostty/Ghostty.App.swift --line 116
+
+# Teach the ordinary runtime entrypoint for creating a new surface.
+breakpoint set --file src/apprt/embedded.zig --line 1541
+
+# Teach where Surface.init starts wiring shared renderer and app-mailbox state.
+breakpoint set --file src/Surface.zig --line 549
+
+# Teach where the exec backend and Termio are installed into the surface.
+breakpoint set --file src/Surface.zig --line 654
+
+# Teach where the renderer thread is spawned for the first surface.
+breakpoint set --file src/Surface.zig --line 700
+
+# Teach where the IO thread is spawned for the first surface.
+breakpoint set --file src/Surface.zig --line 708
+
+# Teach that the renderer thread schedules an initial wakeup immediately.
+breakpoint set --file src/renderer/Thread.zig --line 243
+
+# Teach that the exec backend, not Surface.init, spawns the extra PTY read thread.
+breakpoint set --file src/termio/Exec.zig --line 137
