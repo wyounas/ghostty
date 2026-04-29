@@ -41,6 +41,17 @@ sh debugging/s2_input_stack/run.sh
 At the LLDB prompt:
 
 ```lldb
+breakpoint list
+```
+
+Confirm:
+
+- breakpoint `1` at `embedded.zig:1762` is enabled
+- breakpoints `2` through `9` are disabled
+
+Then:
+
+```lldb
 run
 ```
 

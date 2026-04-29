@@ -29,10 +29,16 @@ After this session, you should be able to answer:
 1. Run:
    `sh debugging/s2_input_stack/run.sh`
 2. In LLDB, run:
+   `breakpoint list`
+3. Confirm the staged setup before launching:
+   - breakpoint `1` at `embedded.zig:1762` should be enabled
+   - the later breakpoints should exist but be disabled
+4. In LLDB, run:
    `run`
-3. In the Ghostty window, type `l` and then `s`, but do not press Enter yet.
-4. One character is enough to learn the stack. If it gets noisy, study just `l`.
-5. Use these LLDB commands as you move through the stops:
+5. Wait until Ghostty is visibly usable, then type `l` and then `s`, but do not
+   press Enter yet.
+6. One character is enough to learn the stack. If it gets noisy, study just `l`.
+7. Use these LLDB commands as you move through the stops:
    - `continue` or `c`
    - `next` or `n`
    - `step` or `s`
@@ -42,7 +48,7 @@ After this session, you should be able to answer:
    - `frame variable`
    - `frame variable --show-types <name>`
    - `source list -l <line>`
-6. If you want a Hoare-style walkthrough with explicit preconditions and
+8. If you want a Hoare-style walkthrough with explicit preconditions and
    postconditions at each stop, use:
    `debugging/s2_input_stack/commands_hoare.md`
 
@@ -57,6 +63,20 @@ Input debugging is easier if you split it into three questions:
 If `event` or `write_req` prints in a low-level way, do not panic. For this
 session, the important thing is the sequence of control-flow checkpoints, not a
 perfect pretty-print of every struct field.
+
+## Important note about session stability
+
+The first useful stop for this session should happen only after you have a
+usable Ghostty window and you type into it.
+
+To make that reliable, this session uses a **staged breakpoint setup**:
+
+- at launch, only the first surface-key export breakpoint is enabled
+- when that breakpoint is hit, the later input-path breakpoints are enabled
+- this reduces the chance of unrelated early stops from other traffic
+
+If a later generic breakpoint fires before you typed into the Ghostty window,
+restart the session. That means the staged setup was not the active one.
 
 ## What to watch for
 

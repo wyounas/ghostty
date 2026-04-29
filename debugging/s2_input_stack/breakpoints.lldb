@@ -24,3 +24,11 @@ breakpoint set --file src/termio/Thread.zig --line 336
 
 # Teach where the exec backend finally writes bytes to the PTY side.
 breakpoint set --file src/termio/Exec.zig --line 402
+
+# Keep the later input-path breakpoints disabled at startup so the Ghostty
+# window can become usable and the learner can type the probe key first.
+breakpoint disable 2 3 4 5 6 7 8 9
+
+# When the first surface-key boundary fires, disable it and enable the rest of
+# the walkthrough.
+breakpoint command add 1 -o "breakpoint disable 1" -o "breakpoint enable 2 3 4 5 6 7 8 9"
