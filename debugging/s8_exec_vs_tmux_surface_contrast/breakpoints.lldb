@@ -1,0 +1,20 @@
+# Teach where a normal split request begins ordinary child-surface creation.
+breakpoint set --file src/apprt/embedded.zig --line 1910
+
+# Teach where the ordinary child surface is created by runtime.
+breakpoint set --file src/apprt/embedded.zig --line 1541
+
+# Teach where generic shared surface plumbing starts, before exec-specific setup.
+breakpoint set --file src/Surface.zig --line 549
+
+# Teach where the ordinary child surface installs the exec backend.
+breakpoint set --file src/Surface.zig --line 635
+
+# Teach where the ordinary exec path adds the dedicated PTY read thread.
+breakpoint set --file src/termio/Exec.zig --line 137
+
+# Teach where the tmux Viewer produces structural window information.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 896
+
+# Teach the exact point where tmux structure is known but no Ghostty child surface exists yet.
+breakpoint set --file src/termio/stream_handler.zig --line 446

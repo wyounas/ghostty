@@ -1,0 +1,29 @@
+# Teach the typed-key producer callsite before the generic queueIo funnel.
+breakpoint set --file src/Surface.zig --line 2765
+
+# Teach the generic Surface -> Termio funnel, but keep it disabled until the
+# typed-key breakpoint proves we are on the right path.
+breakpoint set --file src/Surface.zig --line 860
+
+# Teach the common producer-side helper that couples send plus notify.
+breakpoint set --file src/termio/Termio.zig --line 400
+
+# Teach where the termio mailbox queue push happens.
+breakpoint set --file src/termio/mailbox.zig --line 61
+
+# Teach the distinct wakeup step that follows the queue push.
+breakpoint set --file src/termio/mailbox.zig --line 99
+
+# Teach where the IO thread wakes in response to mailbox activity.
+breakpoint set --file src/termio/Thread.zig --line 440
+
+# Teach where the IO thread drains and dispatches queued messages.
+breakpoint set --file src/termio/Thread.zig --line 308
+
+# Keep the generic mailbox breakpoints disabled at startup so window creation
+# can finish and the learner can type a key first.
+breakpoint disable 2 3 4 5 6 7
+
+# When the typed-key breakpoint fires, disable it and enable the rest of the
+# mailbox walkthrough.
+breakpoint command add 1 -o "breakpoint disable 1" -o "breakpoint enable 2 3 4 5 6 7"

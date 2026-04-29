@@ -1,0 +1,26 @@
+# Teach the first Zig export boundary for the surface-key path.
+breakpoint set --file src/apprt/embedded.zig --line 1762
+
+# Teach the shared dispatch helper used after that boundary.
+breakpoint set --file src/apprt/embedded.zig --line 179
+
+# Teach the main per-surface keyboard entrypoint.
+breakpoint set --file src/Surface.zig --line 2604
+
+# Teach that Ghostty considers bindings before terminal input encoding.
+breakpoint set --file src/Surface.zig --line 2649
+
+# Teach where Surface decides to encode the key for terminal input.
+breakpoint set --file src/Surface.zig --line 2752
+
+# Teach where logical key input becomes concrete bytes.
+breakpoint set --file src/Surface.zig --line 3135
+
+# Teach where the encoded write request is forwarded to the IO side.
+breakpoint set --file src/Surface.zig --line 2765
+
+# Teach where the IO thread dispatches the queued write message.
+breakpoint set --file src/termio/Thread.zig --line 336
+
+# Teach where the exec backend finally writes bytes to the PTY side.
+breakpoint set --file src/termio/Exec.zig --line 402

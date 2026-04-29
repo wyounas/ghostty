@@ -1,0 +1,17 @@
+# Teach where DCS hook handling first reaches StreamHandler.
+breakpoint set --file src/termio/stream_handler.zig --line 358
+
+# Teach where tmux control mode is recognized as DCS 1000 p.
+breakpoint set --file src/terminal/dcs.zig --line 60
+
+# Teach where StreamHandler allocates the tmux Viewer on `.enter`.
+breakpoint set --file src/termio/stream_handler.zig --line 385
+
+# Teach where the Viewer waits for session discovery.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 372
+
+# Teach where `session-changed` moves the Viewer into command-queue startup.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 390
+
+# Teach where Ghostty turns a `Viewer .command` action into a write back to tmux.
+breakpoint set --file src/termio/stream_handler.zig --line 437

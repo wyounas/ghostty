@@ -1,0 +1,14 @@
+# Teach where Viewer starts parsing tmux list-windows output.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 845
+
+# Teach where Viewer creates pane-terminal state from layout leaf nodes.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 1145
+
+# Teach where Viewer appends the `.windows` action for its caller.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 896
+
+# Teach where StreamHandler iterates over Viewer actions.
+breakpoint set --file src/termio/stream_handler.zig --line 427
+
+# Teach the exact dead end on `main` where `.windows` currently stops.
+breakpoint set --file src/termio/stream_handler.zig --line 446

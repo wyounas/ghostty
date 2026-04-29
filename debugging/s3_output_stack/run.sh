@@ -2,7 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
-SESSION_DIR="$ROOT/debugging/s0_startup_threads"
+SESSION_DIR="$ROOT/debugging/s3_output_stack"
 APP_BIN="$ROOT/macos/build/Debug/Ghostty.app/Contents/MacOS/ghostty"
 
 if [ ! -x "$APP_BIN" ]; then
@@ -17,7 +17,8 @@ fi
 
 LOG_PATH="$SESSION_DIR/session.log"
 : > "$LOG_PATH"
+echo "Session: S3 output stack"
 echo "Writing LLDB transcript to $LOG_PATH"
 
-GHOSTTY_LOG=stderr,macos \
+GHOSTTY_LOG=stderr \
   lldb --no-lldbinit -S "$SESSION_DIR/breakpoints.lldb" "$APP_BIN" 2>&1 | tee "$LOG_PATH"

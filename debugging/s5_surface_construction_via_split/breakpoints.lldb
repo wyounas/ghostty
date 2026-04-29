@@ -1,0 +1,17 @@
+# Teach where a normal split request enters the embedded runtime.
+breakpoint set --file src/apprt/embedded.zig --line 1910
+
+# Teach where runtime asks core Ghostty to create a new surface.
+breakpoint set --file src/apprt/embedded.zig --line 1541
+
+# Teach where the child surface begins wiring mailbox and renderer state.
+breakpoint set --file src/Surface.zig --line 549
+
+# Teach where the child surface installs Termio with the exec backend.
+breakpoint set --file src/Surface.zig --line 654
+
+# Teach where the child surface starts its renderer thread.
+breakpoint set --file src/Surface.zig --line 700
+
+# Teach where the child surface starts its IO thread.
+breakpoint set --file src/Surface.zig --line 708

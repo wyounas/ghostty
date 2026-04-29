@@ -2,7 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
-SESSION_DIR="$ROOT/debugging/s0_startup_threads"
+SESSION_DIR="$ROOT/debugging/s8_exec_vs_tmux_surface_contrast"
 APP_BIN="$ROOT/macos/build/Debug/Ghostty.app/Contents/MacOS/ghostty"
 
 if [ ! -x "$APP_BIN" ]; then
@@ -15,8 +15,13 @@ EOF
   exit 1
 fi
 
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "tmux not found in PATH. Install tmux if you want the tmux side of this contrast live."
+fi
+
 LOG_PATH="$SESSION_DIR/session.log"
 : > "$LOG_PATH"
+echo "Session: S8 exec vs tmux surface contrast"
 echo "Writing LLDB transcript to $LOG_PATH"
 
 GHOSTTY_LOG=stderr,macos \

@@ -1,0 +1,20 @@
+# Teach where Surface turns a screen-size change into a termio resize message.
+breakpoint set --file src/Surface.zig --line 2440
+
+# Teach the exact queue point for resize messages.
+breakpoint set --file src/Surface.zig --line 2460
+
+# Teach where the IO thread sees the queued resize message.
+breakpoint set --file src/termio/Thread.zig --line 321
+
+# Teach where the IO thread coalesces repeated resize activity.
+breakpoint set --file src/termio/Thread.zig --line 376
+
+# Teach where the coalesced resize finally calls into Termio.
+breakpoint set --file src/termio/Thread.zig --line 430
+
+# Teach where Termio performs backend resize and logical terminal resize.
+breakpoint set --file src/termio/Termio.zig --line 478
+
+# Teach where the exec backend translates resize into PTY subprocess resize.
+breakpoint set --file src/termio/Exec.zig --line 260

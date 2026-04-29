@@ -1,0 +1,20 @@
+# Teach where the dedicated PTY read thread starts for exec-backed surfaces.
+breakpoint set --file src/termio/Exec.zig --line 1248
+
+# Teach where the PTY read loop receives concrete output bytes.
+breakpoint set --file src/termio/Exec.zig --line 1298
+
+# Teach the main Termio entrypoint for processing child output.
+breakpoint set --file src/termio/Termio.zig --line 678
+
+# Teach where output processing begins parsing and render notification work.
+breakpoint set --file src/termio/Termio.zig --line 687
+
+# Teach the actual bulk parser call on the common non-inspector path.
+breakpoint set --file src/termio/Termio.zig --line 728
+
+# Teach where the renderer thread responds to a wakeup with frame rebuilding.
+breakpoint set --file src/renderer/Thread.zig --line 596
+
+# Teach where the renderer copies terminal-visible state under the mutex.
+breakpoint set --file src/renderer/generic.zig --line 1173
