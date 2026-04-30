@@ -4,7 +4,8 @@
 
 - Trace a keystroke from macOS apprt into `Surface.keyCallback`.
 - Distinguish the keybinding path from the PTY-write path.
-- See exactly when bytes are finally written to the exec backend.
+- See exactly when bytes enter the exec backend and when they are handed to the
+  PTY write stream.
 
 ## Success criteria
 
@@ -13,7 +14,9 @@ After this session, you should be able to answer:
 1. Where does a surface key event first enter Zig?
 2. What runs before Ghostty decides to write anything to the PTY?
 3. Why does the shell not visibly respond until output comes back later?
-4. Which function actually writes bytes toward the child process?
+4. Where does Ghostty first enter the concrete exec backend write path?
+5. Where does Ghostty stop doing backend selection and queue a real PTY-stream
+   write?
 
 ## Prerequisites
 
@@ -31,7 +34,7 @@ After this session, you should be able to answer:
 2. In LLDB, run:
    `breakpoint list`
 3. Confirm the staged setup before launching:
-   - breakpoint `1` at `embedded.zig:1762` should be enabled
+   - breakpoint `1` at `embedded.zig:1765` should be enabled
    - the later breakpoints should exist but be disabled
 4. In LLDB, run:
    `run`
@@ -54,15 +57,16 @@ After this session, you should be able to answer:
 
 ## How to think about LLDB output in this session
 
-Input debugging is easier if you split it into three questions:
+Input debugging is easier if you split it into four questions:
 
 1. Where did the key event first enter Zig?
 2. Where did Ghostty decide whether the key was a binding or terminal input?
-3. Where did concrete bytes finally go to the backend?
+3. Where did Ghostty enter the concrete exec backend write path?
+4. Where did Ghostty hand a concrete byte slice to the PTY-side stream?
 
-If `event` or `write_req` prints in a low-level way, do not panic. For this
-session, the important thing is the sequence of control-flow checkpoints, not a
-perfect pretty-print of every struct field.
+If `event`, `data`, or `write_req` prints in a low-level way, do not panic.
+For this session, the important thing is the sequence of control-flow
+checkpoints, not a perfect pretty-print of every struct field.
 
 ## Important note about session stability
 
@@ -85,7 +89,10 @@ restart the session. That means the staged setup was not the active one.
 - `embedded.App.keyEvent` is the shared dispatch point after that boundary.
 - `Surface.keyCallback` decides between binding handling and encoding.
 - `encodeKey` turns logical key input into bytes.
-- `queueIo -> Termio -> IO thread -> Exec.queueWrite` is the write path.
+- `queueIo -> Termio -> IO thread -> Exec.queueWrite` is the backend-entry
+  write path.
+- `exec.write_stream.queueWrite(...)` is the next handoff: Ghostty now queues a
+  concrete async write on the PTY-side stream.
 - There is no "local echo" shortcut in `keyCallback`; visible text comes later
   from child output.
 
@@ -93,10 +100,10 @@ restart the session. That means the staged setup was not the active one.
 
 ### 1. Validate the first Zig boundary for surface key input
 
-At the stop in [embedded.zig](/Users/waqas/code/ghostty_forked/src/apprt/embedded.zig:1762):
+At the stop in [embedded.zig](/Users/waqas/code/ghostty_forked/src/apprt/embedded.zig:1765):
 
 - run `thread backtrace`
-- run `source list -l 1762`
+- run `source list -l 1765`
 - run `frame variable --show-types surface`
 - run `frame variable --show-types event`
 - continue
@@ -108,12 +115,13 @@ What this proves:
 
 ### 2. Validate the shared dispatch point
 
-At the stop in [embedded.zig](/Users/waqas/code/ghostty_forked/src/apprt/embedded.zig:179):
+At the stop in [embedded.zig](/Users/waqas/code/ghostty_forked/src/apprt/embedded.zig:183):
 
 - run `thread backtrace`
-- run `source list -l 179`
+- run `source list -l 183`
 - run `frame variable --show-types target`
-- run `frame variable --show-types event`
+- if `event` prints as unavailable here, do not chase it; this is still a
+  function-entry stop, so backtrace and source location are the reliable proof
 
 What this proves:
 
@@ -124,14 +132,15 @@ What this proves:
 ### 3. Validate the surface keyboard decision path
 
 At the stops in
-[Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:2604),
+[Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:2607),
 [Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:2649), and
 [Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:2752):
 
-- run `source list -l 2604`
+- run `source list -l 2607`
 - run `frame variable --show-types event_orig`
 - continue
 - run `source list -l 2649`
+- run `frame variable --show-types event`
 - continue
 - run `source list -l 2752`
 - run `frame variable --show-types event`
@@ -145,10 +154,10 @@ What this proves:
 ### 4. Validate key encoding and write forwarding
 
 At the stops in
-[Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:3135) and
+[Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:3139) and
 [Surface.zig](/Users/waqas/code/ghostty_forked/src/Surface.zig:2765):
 
-- run `source list -l 3135`
+- run `source list -l 3139`
 - run `frame variable --show-types event`
 - continue
 - run `source list -l 2765`
@@ -162,21 +171,29 @@ What this proves:
 ### 5. Validate the backend write handoff
 
 At the stops in
-[termio/Thread.zig](/Users/waqas/code/ghostty_forked/src/termio/Thread.zig:336)
-and [Exec.zig](/Users/waqas/code/ghostty_forked/src/termio/Exec.zig:402):
+[termio/Thread.zig](/Users/waqas/code/ghostty_forked/src/termio/Thread.zig:336),
+[Exec.zig](/Users/waqas/code/ghostty_forked/src/termio/Exec.zig:408), and
+[Exec.zig](/Users/waqas/code/ghostty_forked/src/termio/Exec.zig:457):
 
 - run `thread backtrace`
 - run `source list -l 336`
 - run `frame variable --show-types message`
 - continue
-- run `source list -l 402`
+- run `source list -l 408`
+- if `data` looks wrong at first, step once or twice and then inspect it again
 - run `frame variable --show-types data`
+- run `frame variable --show-types linefeed`
+- continue
+- run `source list -l 457`
+- run `frame variable --show-types slice`
+- run `frame variable --show-types linefeed`
 
 What this proves:
 
 - the write is dispatched by the IO thread, not by the original key handler
-- the exec backend is the piece that finally writes bytes toward the child
-  process
+- `Exec.queueWrite` is the first concrete exec-backend entrypoint
+- `exec.write_stream.queueWrite(...)` is the PTY-stream handoff, so after this
+  there is no more Ghostty backend selection layer in the path
 
 ## A simple `ls` mental model
 
@@ -187,14 +204,20 @@ If you type `l`, `s`, and then Enter:
 3. the embedded apprt layer converts/routes them into Ghostty input handling
 4. `Surface.keyCallback` decides they are ordinary terminal input
 5. Ghostty encodes the keys into bytes
-6. the IO side writes those bytes to the PTY through `Exec`
-7. only later does the shell respond with output
+6. the IO side enters `Exec.queueWrite`
+7. `Exec` hands a concrete byte slice to `exec.write_stream.queueWrite(...)`
+8. only later does the PTY, shell, read side, and renderer make the result
+   visible
 
 So the shell does not visibly react during this session because this session is
-only about the write side, not the later read-and-render side
+only about the write side, not the later read-and-render side.
 
 ## What this session does not cover
 
 - PTY read-side parsing
 - Rendering
 - tmux control mode
+
+If you want to see the typed bytes come back from the shell/tty side and become
+visible on screen, use `s3_output_stack`. `s2` stops at the PTY-master write
+handoff.

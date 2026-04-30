@@ -1,11 +1,11 @@
 # Teach the first Zig export boundary for the surface-key path.
-breakpoint set --file src/apprt/embedded.zig --line 1762
+breakpoint set --file src/apprt/embedded.zig --line 1765
 
 # Teach the shared dispatch helper used after that boundary.
-breakpoint set --file src/apprt/embedded.zig --line 179
+breakpoint set --file src/apprt/embedded.zig --line 183
 
 # Teach the main per-surface keyboard entrypoint.
-breakpoint set --file src/Surface.zig --line 2604
+breakpoint set --file src/Surface.zig --line 2607
 
 # Teach that Ghostty considers bindings before terminal input encoding.
 breakpoint set --file src/Surface.zig --line 2649
@@ -14,7 +14,7 @@ breakpoint set --file src/Surface.zig --line 2649
 breakpoint set --file src/Surface.zig --line 2752
 
 # Teach where logical key input becomes concrete bytes.
-breakpoint set --file src/Surface.zig --line 3135
+breakpoint set --file src/Surface.zig --line 3139
 
 # Teach where the encoded write request is forwarded to the IO side.
 breakpoint set --file src/Surface.zig --line 2765
@@ -22,13 +22,16 @@ breakpoint set --file src/Surface.zig --line 2765
 # Teach where the IO thread dispatches the queued write message.
 breakpoint set --file src/termio/Thread.zig --line 336
 
-# Teach where the exec backend finally writes bytes to the PTY side.
-breakpoint set --file src/termio/Exec.zig --line 402
+# Teach where the exec backend entrypoint begins.
+breakpoint set --file src/termio/Exec.zig --line 408
+
+# Teach the closest useful Ghostty-side proof of the PTY-master write handoff.
+breakpoint set --file src/termio/Exec.zig --line 457
 
 # Keep the later input-path breakpoints disabled at startup so the Ghostty
 # window can become usable and the learner can type the probe key first.
-breakpoint disable 2 3 4 5 6 7 8 9
+breakpoint disable 2 3 4 5 6 7 8 9 10
 
 # When the first surface-key boundary fires, disable it and enable the rest of
 # the walkthrough.
-breakpoint command add 1 -o "breakpoint disable 1" -o "breakpoint enable 2 3 4 5 6 7 8 9"
+breakpoint command add 1 -o "breakpoint disable 1" -o "breakpoint enable 2 3 4 5 6 7 8 9 10"

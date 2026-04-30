@@ -299,6 +299,7 @@ Each session directory should contain:
 - `README.md`
 - `breakpoints.lldb`
 - `commands.md`
+- `commands_hoare.md`
 - `run.sh`
 - `transcript_template.md`
 
@@ -310,17 +311,32 @@ Each session directory should contain:
 - prerequisites
 - realistic expected duration
 - exact run instructions
+- for input-driven sessions, explicitly tell me to wait until Ghostty is
+  visibly usable and ready for input before typing or clicking
 - what the session does **not** cover
 
 `breakpoints.lldb`
 - comments before every breakpoint
 - conditions / one-shot behavior where useful
 - auto-continue traces where hot-path stopping would be noisy
+- for input-driven sessions, use staged breakpoints when needed so startup
+  traffic does not stop the app before the Ghostty window is visible and usable
 
 `commands.md`
 - only LLDB commands relevant to that session
 - include Zig/macOS gotchas only if they affect that session
 - not a generic LLDB cheat sheet
+- if the session is input-driven, include an explicit preflight check that the
+  app is running, the window is visible, and the learner should not type until
+  the window is ready
+
+`commands_hoare.md`
+- a Hoare-style companion for every session:
+  `{ precondition } line executes { postcondition }`
+- use it to make each stop teach one precise fact
+- keep the assertions conservative; do not claim hidden state you did not
+  actually prove with source location, thread identity, stop order, or a small
+  reliable local value
 
 `run.sh`
 - POSIX shell
@@ -331,6 +347,9 @@ Each session directory should contain:
 - use `GHOSTTY_LOG` deliberately where useful
 - capture debugger output to `session.log`
 - do **not** invent Ghostty CLI flags or config syntax; verify them first
+- for input-driven sessions, make the startup behavior consistent with the
+  breakpoint plan so Ghostty can become visible and usable before the learner
+  types into it
 
 `transcript_template.md`
 - a structured place for me to record observations against the session's
@@ -362,6 +381,8 @@ Success:
 **S2 - Input stack: user types `ls` (no Enter)**
 - trace one keystroke from apprt callback to PTY write
 - answer the local-echo question
+- ensure the window is visibly usable before the learner types, and stage
+  breakpoints if needed so startup traffic does not stop the app too early
 
 Success:
 - I can name every important function from key event to PTY write.

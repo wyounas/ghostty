@@ -30,6 +30,11 @@ without overclaiming about hidden state.
    - stop order
    more than giant dumps.
 
+5. Some function-entry breakpoints stop before LLDB has stabilized all local
+   values for display. If an argument looks unavailable or nonsense at the
+   first stop inside a function, validate the control-flow fact first, then use
+   `next` once or twice before trusting the printed value.
+
 ## Setup
 
 Run:
@@ -46,8 +51,8 @@ breakpoint list
 
 Confirm:
 
-- breakpoint `1` at `embedded.zig:1762` is enabled
-- breakpoints `2` through `9` are disabled
+- breakpoint `1` at `embedded.zig:1765` is enabled
+- breakpoints `2` through `10` are disabled
 
 Then:
 
@@ -66,15 +71,13 @@ thread backtrace
 frame variable --show-types
 ```
 
-## Stop 1: `ghostty_surface_key` at `embedded.zig:1762`
+## Stop 1: `ghostty_surface_key` at `embedded.zig:1765`
 
 Source:
 
 ```zig
-return surface.app.keyEvent(
-    .{ .surface = surface },
-    event.keyEvent(),
-)
+) bool {
+    return surface.app.keyEvent(
 ```
 
 ### Preconditions
@@ -91,7 +94,7 @@ Run:
 
 ```lldb
 thread backtrace
-source list -l 1762
+source list -l 1765
 frame variable --show-types surface
 frame variable --show-types event
 ```
@@ -116,14 +119,13 @@ continue
 
 Then confirm the next relevant stop is `embedded.App.keyEvent`.
 
-## Stop 2: `embedded.App.keyEvent` at `embedded.zig:179`
+## Stop 2: `embedded.App.keyEvent` at `embedded.zig:183`
 
 Source:
 
 ```zig
-const input_event: input.KeyEvent = event.core() orelse return false;
-...
-.surface => |surface| try surface.core_surface.keyCallback(input_event),
+) !bool {
+    const input_event: input.KeyEvent = event.core() orelse return false;
 ```
 
 ### Preconditions
@@ -141,10 +143,12 @@ Run:
 
 ```lldb
 thread backtrace
-source list -l 179
+source list -l 183
 frame variable --show-types target
-frame variable --show-types event
 ```
+
+If `event` is unavailable here, that is acceptable. This stop is still useful
+because the control-flow fact is "the shared dispatch helper was entered."
 
 ### Postcondition
 
@@ -159,9 +163,9 @@ Use:
 continue
 ```
 
-Then confirm the next relevant stop is `Surface.zig:2604`.
+Then confirm the next relevant stop is `Surface.zig:2607`.
 
-## Stop 3: `Surface.keyCallback` at `Surface.zig:2604`
+## Stop 3: `Surface.keyCallback` at `Surface.zig:2607`
 
 Source:
 
@@ -184,7 +188,7 @@ Run:
 
 ```lldb
 thread backtrace
-source list -l 2604
+source list -l 2607
 frame variable --show-types event_orig
 ```
 
@@ -283,14 +287,15 @@ Use:
 continue
 ```
 
-Then confirm you later reach `Surface.zig:3135` and then `Surface.zig:2765`.
+Then confirm you later reach `Surface.zig:3139` and then `Surface.zig:2765`.
 
-## Stop 6: `encodeKey` at `Surface.zig:3135`
+## Stop 6: `encodeKey` at `Surface.zig:3139`
 
 Source:
 
 ```zig
-fn encodeKey(...) !?termio.Message.WriteReq
+) !?termio.Message.WriteReq {
+    const write_req: termio.Message.WriteReq = req: {
 ```
 
 ### Preconditions
@@ -306,7 +311,7 @@ Run:
 
 ```lldb
 thread backtrace
-source list -l 3135
+source list -l 3139
 frame variable --show-types event
 ```
 
@@ -411,14 +416,16 @@ Use:
 continue
 ```
 
-Then confirm the next relevant stop is `Exec.zig:402`.
+Then confirm the next relevant stop is `Exec.zig:408`.
 
-## Stop 9: `Exec.queueWrite` at `Exec.zig:402`
+## Stop 9: `Exec.queueWrite` entry at `Exec.zig:408`
 
 Source:
 
 ```zig
-pub fn queueWrite(self: *Exec, ..., data: []const u8, linefeed: bool) !void
+) !void {
+    _ = self;
+    const exec = &td.backend.exec;
 ```
 
 ### Preconditions
@@ -426,9 +433,9 @@ pub fn queueWrite(self: *Exec, ..., data: []const u8, linefeed: bool) !void
 Before this function executes:
 
 - the IO thread has already decided to dispatch a write message
-- `Exec` is the backend that will perform the PTY-side write
-- for the simple key probe, `data` should correspond to the encoded byte for
-  `l`
+- `Exec` is the concrete backend selected for this surface
+- no more backend *selection* remains after this frame; from here on, the path
+  is concrete exec-write machinery
 
 ### Validate the preconditions
 
@@ -436,21 +443,80 @@ Run:
 
 ```lldb
 thread backtrace
-source list -l 402
+source list -l 408
+next
+next
 frame variable --show-types data
 frame variable --show-types linefeed
 ```
 
+Why `next` twice:
+
+- the first stop is at function entry
+- LLDB may show noisy or unavailable argument values there
+- after a step or two, `data` should stabilize to the encoded bytes for your
+  probe key, such as a single-byte `l`
+
 ### Postcondition
 
-After `Exec.queueWrite` continues, Ghostty is now inside the backend that will
-carry the bytes toward the child process.
+If `exec.exited` is false, `Exec.queueWrite` will build a concrete `slice` and
+reach the PTY-stream handoff at line 457.
 
 ### Validate the postcondition
 
-For this session, source position plus thread identity is enough. You do not
-need to follow the lower-level stream/buffer machinery here unless you want
-more detail than `s2` requires.
+Use:
+
+```lldb
+continue
+```
+
+Then confirm the next relevant stop is `Exec.zig:457`.
+
+## Stop 10: PTY-stream handoff at `Exec.zig:457`
+
+Source:
+
+```zig
+exec.write_stream.queueWrite(
+    td.loop,
+    &exec.write_queue,
+```
+
+### Preconditions
+
+Before this line executes:
+
+- the IO thread is still in the concrete exec backend path
+- a concrete `slice` now exists
+- Ghostty is about to hand that slice to the PTY-side async stream writer
+
+### Validate the preconditions
+
+Run:
+
+```lldb
+thread backtrace
+source list -l 457
+frame variable --show-types slice
+frame variable --show-types linefeed
+```
+
+For a simple `l`, `slice` should contain one byte: `l`.
+
+### Postcondition
+
+After this line executes:
+
+- the write has been queued on `exec.write_stream`
+- the next lower-level step is async stream machinery, not another Ghostty
+  backend-selection layer
+- completion later returns through `ttyWrite`
+
+### Validate the postcondition
+
+For this session, source position and backtrace are enough. You do not need to
+step into xev internals unless you explicitly want lower-level event-loop
+details.
 
 ## Assertions you should avoid
 
@@ -462,6 +528,7 @@ Do **not** claim the following from this session:
 - "Every key always becomes `write_small`."  
   Better: "A simple ASCII key like `l` commonly does in this session."
 - "The export boundary and shared dispatch helper are the same thing."
+- "The first function-entry dump always shows trustworthy argument values."
 
 ## Condensed Hoare story
 
@@ -496,7 +563,11 @@ termio/Thread.zig:336
 
 { backend write path entered }
 Exec.queueWrite
-{ bytes are now being carried toward the child process }
+{ a concrete byte slice is built }
+
+{ concrete slice exists }
+Exec.zig:457
+{ the write is queued on the PTY-side stream }
 ```
 
 That is the architectural lesson `s2` is meant to teach.
