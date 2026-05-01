@@ -190,6 +190,29 @@ No PTY is involved in that child path.
 
 That is the strongest code evidence for "tmux child backend does not need its own PTY."
 
+What exactly does "source surface gets pane bytes" mean?
+
+1. The real shell is running inside a tmux pane.
+2. That shell writes output to the pane's terminal device.
+3. The tmux server already owns that pane, so it sees that output.
+4. In control mode, tmux reports pane content back to the control client:
+   - live output as notifications like `%output %<pane> ...`
+   - initial/queried content through command responses like `capture-pane`
+5. The tmux client (`tmux -CC`) writes that control-mode stream to its own
+   `stdout`.
+6. In Ghostty, the source surface is an ordinary `exec` surface running that
+   tmux client as a subprocess.
+7. So Ghostty reads those bytes exactly the normal exec way:
+   - tmux client `stdout` is connected to the PTY slave
+   - Ghostty owns the PTY master
+   - Ghostty's exec read thread reads from that PTY master
+8. Those bytes then go through:
+   - `Termio.processOutput`
+   - VT parser
+   - DCS handler
+   - tmux control parser
+   - `Viewer`
+
 ## 4. The full `ls` flow
 
 There are two versions of this answer:
@@ -391,7 +414,8 @@ The source surface is still an ordinary exec-backed surface.
 
 So the output path starts at the normal place:
 
-- exec read thread reads bytes from the PTY master
+- exec read thread reads bytes from the PTY master. After the exec read thread reads bytes from the PTY master, it calls Termio.processOutput directly, synchronously, on that same
+  read thread.
 - `Termio.processOutput`
 - VT parser
 - DCS detection for tmux control mode
@@ -399,6 +423,27 @@ So the output path starts at the normal place:
 - `Viewer`
 
 That is the source-side input parser path.
+
+How does `Termio.processOutput` reach the VT parser?
+
+- `Termio.processOutput` locks `renderer_state.mutex`
+- then calls `processOutputLocked(buf)`
+- `processOutputLocked(buf)` calls:
+  - `self.terminal_stream.nextSlice(buf)`
+- `terminal_stream.nextSlice(buf)` is the important handoff: it feeds the byte
+  slice into Ghostty's terminal parsing pipeline
+- that pipeline runs the VT parser and dispatches the resulting actions through
+  the stream handler
+
+So the concise picture is:
+
+```text
+Termio.processOutput
+-> processOutputLocked
+-> terminal_stream.nextSlice(buf)
+-> VT parser runs
+-> handler mutates Terminal state
+```
 
 ### Step 4: `Viewer` decides which pane the bytes belong to
 
@@ -447,6 +492,46 @@ source/control side receives pane bytes
 -> child Termio.processOutput(data)
 -> child Terminal updates
 ```
+
+How does the target child surface actually receive `.process_output`?
+
+- the source surface does not call the child parser stack inline
+- instead, it enqueues a mailbox message into the child surface's `Termio`
+
+The key source-side step is:
+
+```text
+target.io.queueMessage(.process_output, ...)
+```
+
+More concretely:
+
+1. the source receives `pane_snapshot`
+2. the source stores it as `pending_snapshot`
+3. `tmuxMvpFlushPendingSnapshotLocked()` checks whether the child target surface
+   pointer is ready
+4. if it is ready, the source calls `target.io.queueMessage(...)` with
+   `.process_output`
+5. later, the child IO thread drains that mailbox message
+6. in `termio/Thread.zig`, the `.process_output` arm calls:
+   - `io.processOutput(v.data)`
+
+So the child path is:
+
+```text
+source stores snapshot
+-> source enqueues .process_output into child Termio mailbox
+-> child IO thread drains mailbox
+-> child Termio.processOutput(data)
+-> child parser / Terminal / renderer path runs normally
+```
+
+One subtle but important detail:
+
+- if the child surface is not ready yet, the source cannot flush immediately
+- so the source keeps the bytes in `pending_snapshot`
+- once the child becomes ready, Ghostty sends `.tmux_mvp_target_ready`
+- then the source flushes that pending snapshot into the child mailbox
 
 ### Step 6: The child renderer draws from the child Terminal
 
