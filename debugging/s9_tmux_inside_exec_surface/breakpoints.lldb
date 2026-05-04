@@ -1,0 +1,36 @@
+# Teach where one typed command becomes an IO write request on the app side.
+breakpoint set --file src/Surface.zig --line 2765
+
+# Teach where the IO thread drains the queued small write.
+breakpoint set --file src/termio/Thread.zig --line 336
+
+# Teach the closest useful Ghostty-side proof of the PTY-master write.
+breakpoint set --file src/termio/Exec.zig --line 457
+
+# Teach where the dedicated PTY read thread hands returned bytes into Termio.
+breakpoint set --file src/termio/Exec.zig --line 1326
+
+# Teach the ordinary bulk parser entry for returned output bytes.
+breakpoint set --file src/termio/Termio.zig --line 728
+
+# Teach where the renderer reads terminal-visible state under the mutex.
+breakpoint set --file src/renderer/generic.zig --line 1173
+
+# Teach the first place Ghostty would enter tmux control-mode Viewer handling.
+breakpoint set --file src/termio/stream_handler.zig --line 427
+
+# Teach the first real Viewer structural parse site that should stay unused here.
+breakpoint set --file src/terminal/tmux/viewer.zig --line 845
+
+# Keep the positive path disabled at startup so the learner can first start
+# ordinary tmux and create a split pane before tracing `ls`.
+breakpoint disable 1 2 3 4 5 6
+
+# Make the positive path effectively one-shot so repeated shell output does not
+# drown the session in duplicate stops.
+breakpoint command add 1 -o "breakpoint disable 1"
+breakpoint command add 2 -o "breakpoint disable 2"
+breakpoint command add 3 -o "breakpoint disable 3"
+breakpoint command add 4 -o "breakpoint disable 4"
+breakpoint command add 5 -o "breakpoint disable 5" -o "breakpoint enable 6"
+breakpoint command add 6 -o "breakpoint disable 6"

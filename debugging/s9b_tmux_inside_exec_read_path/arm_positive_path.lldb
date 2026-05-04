@@ -1,0 +1,8 @@
+# Enable the S9B read-path breakpoints after tmux setup is complete.
+breakpoint enable 1 2 3
+
+# Keep the renderer stop disabled until the parser stop has fired.
+breakpoint disable 4
+
+# Resume so pressing Enter on `ls` can trigger the PTY read path.
+continue

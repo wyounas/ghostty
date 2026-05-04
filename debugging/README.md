@@ -21,6 +21,18 @@ Recommended session order:
 8. [s7_tmux_windows_handoff/README.md](/Users/waqas/code/ghostty_forked/debugging/s7_tmux_windows_handoff/README.md)
 9. [s8_exec_vs_tmux_surface_contrast/README.md](/Users/waqas/code/ghostty_forked/debugging/s8_exec_vs_tmux_surface_contrast/README.md)
 
+Optional current-state tmux supplements:
+
+10. [s9a_tmux_inside_exec_write_path/README.md](/Users/waqas/code/ghostty_forked/debugging/s9a_tmux_inside_exec_write_path/README.md)
+11. [s9b_tmux_inside_exec_read_path/README.md](/Users/waqas/code/ghostty_forked/debugging/s9b_tmux_inside_exec_read_path/README.md)
+
+Use `s9a` and `s9b` after `s3` if you want to prove what current Ghostty does
+with ordinary tmux **before** you study tmux control-mode scaffolding.
+
+Legacy combined session:
+
+- [s9_tmux_inside_exec_surface/README.md](/Users/waqas/code/ghostty_forked/debugging/s9_tmux_inside_exec_surface/README.md)
+
 The teaching order is deliberate:
 
 - first learn ordinary Ghostty startup, mailboxes, input, output, and resize

@@ -1,0 +1,8 @@
+# Enable the positive-path S9 breakpoints after tmux setup is complete.
+breakpoint enable 1 2 3 4 5
+
+# Keep the renderer stop disabled until the parser stop has fired once.
+breakpoint disable 6
+
+# Resume the inferior so the next `ls` in the tmux pane can hit STOP 1.
+continue

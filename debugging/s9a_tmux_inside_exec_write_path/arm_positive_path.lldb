@@ -1,0 +1,5 @@
+# Enable the S9A write-path breakpoints after tmux setup is complete.
+breakpoint enable 1 2 3
+
+# Resume so the next typed command byte can hit STOP 1.
+continue

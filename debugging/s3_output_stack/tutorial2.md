@@ -376,6 +376,35 @@ So the existing code already proves the shape:
 Ghostty logic -> command text -> source exec backend -> PTY -> tmux client
 ```
 
+ So Ghostty’s code path is:
+
+  Surface.keyCallback
+  -> queueIo(.write_*)
+  -> IO thread drainMailbox
+  -> Termio.queueWrite
+  -> Exec.queueWrite
+  -> Exec.queueWrtie queues bytes iinto exec.write_stream
+  -> exec stream write on PTY master fd
+
+  Why does that reach the tmux client?
+
+  Because the child subprocess launched by the exec backend has its stdio attached
+  to the PTY slave:
+
+  .stdin = pty.slave,
+  .stdout = pty.slave,
+  .stderr = pty.slave,
+
+  So:
+
+  - Ghostty writes to the PTY master
+  - the tmux client subprocess is on the PTY slave side
+  - therefore the tmux client reads those bytes as its standard input
+
+  That is the exact meaning of:
+
+  > PTY -> tmux client
+
 ### Step 5: The tmux client talks to the tmux server
 
 This is outside Ghostty code, but central to the design.

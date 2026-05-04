@@ -1,0 +1,11 @@
+# Teach where one typed command becomes an IO write request on the app side.
+breakpoint set --file src/Surface.zig --line 2765
+
+# Teach where the IO thread drains the queued small write.
+breakpoint set --file src/termio/Thread.zig --line 336
+
+# Teach the closest useful Ghostty-side proof of the PTY-master write.
+breakpoint set --file src/termio/Exec.zig --line 457
+
+# Keep the write-path stops disabled until tmux setup is complete.
+breakpoint disable 1 2 3

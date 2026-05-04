@@ -1,0 +1,20 @@
+# Teach where the exec read thread actually performs the PTY read.
+breakpoint set --file src/termio/Exec.zig --line 1298
+
+# Teach where the read thread hands returned bytes into Termio.
+breakpoint set --file src/termio/Exec.zig --line 1326
+
+# Teach the ordinary bulk parser entry for returned output bytes.
+breakpoint set --file src/termio/Termio.zig --line 728
+
+# Teach where the renderer reads terminal-visible state under the mutex.
+breakpoint set --file src/renderer/generic.zig --line 1173
+
+# Keep the read-path stops disabled until tmux setup is complete and `ls` has
+# been typed but not yet executed.
+breakpoint disable 1 2 3 4
+
+# Arm the renderer stop only after the parser stop has fired, then disable the
+# whole read-path pack after one complete read->parse->render cycle.
+breakpoint command add 3 -o "breakpoint enable 4"
+breakpoint command add 4 -o "breakpoint disable 1 2 3 4"
