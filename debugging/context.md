@@ -189,6 +189,9 @@ that session:
   "caller" stacks
 - on macOS, backtraces for user input start in Swift / Objective-C frames before
   crossing into Zig
+- on macOS, prefer `script(1)` over `tee` for LLDB transcript capture when the
+  learner must press `Ctrl-C` mid-run; preserve an interactive debugger TTY
+  first, transcript capture second
 
 ## Breakpoint hygiene
 
@@ -212,7 +215,21 @@ These rules are non-negotiable:
 
 4. Prefer conditional breakpoints and one-shot breakpoints where possible.
 
-5. If `GHOSTTY_LOG` would teach the same thing more clearly and cheaply, prefer
+5. **Do not use one-shot breakpoints on paths the learner must observe more
+   than once.**
+   - If the pedagogy depends on repeated events, such as:
+     - typing `l`, then `s`, then Enter
+     - seeing one full read -> parse -> render cycle
+   - then keep the relevant breakpoints armed until the intended teaching cycle
+     completes, and only disable them afterward.
+
+6. **At parser-entry stops, default to inspect + continue, not step-over.**
+   - Stepping over parser calls such as `terminal_stream.nextSlice(buf)` often
+     lands on nearby catch/log lines and creates confusing noise.
+   - Only step if the session explicitly wants to inspect the immediate
+     post-parser line.
+
+7. If `GHOSTTY_LOG` would teach the same thing more clearly and cheaply, prefer
    logging over a breakpoint.
 
 ## Architecture docs: required topics
@@ -293,6 +310,9 @@ Generate:
   - `s6_tmux_entry_and_viewer_startup/`
   - `s7_tmux_windows_handoff/`
   - `s8_exec_vs_tmux_surface_contrast/`
+  - optional current-state tmux supplements:
+    - `s9a_tmux_inside_exec_write_path/`
+    - `s9b_tmux_inside_exec_read_path/`
 
 Each session directory should contain:
 
@@ -329,6 +349,9 @@ Each session directory should contain:
 - if the session is input-driven, include an explicit preflight check that the
   app is running, the window is visible, and the learner should not type until
   the window is ready
+- if a stop is parser-entry or similarly hot/noisy, say explicitly whether the
+  learner should `continue`, `next`, or inspect only; do not leave that choice
+  ambiguous
 
 `commands_hoare.md`
 - a Hoare-style companion for every session:
@@ -337,6 +360,10 @@ Each session directory should contain:
 - keep the assertions conservative; do not claim hidden state you did not
   actually prove with source location, thread identity, stop order, or a small
   reliable local value
+- if the session teaches a repeated path, say whether the learner is expected to
+  observe:
+  - one representative cycle, or
+  - repeated per-key/per-chunk cycles
 
 `run.sh`
 - POSIX shell
@@ -346,6 +373,9 @@ Each session directory should contain:
 - source `breakpoints.lldb`
 - use `GHOSTTY_LOG` deliberately where useful
 - capture debugger output to `session.log`
+- on macOS, prefer a transcript mechanism that preserves interactive LLDB
+  control, such as `script(1)`, especially if the learner must interrupt LLDB
+  with `Ctrl-C` after the app is already running
 - do **not** invent Ghostty CLI flags or config syntax; verify them first
 - for input-driven sessions, make the startup behavior consistent with the
   breakpoint plan so Ghostty can become visible and usable before the learner
@@ -392,6 +422,26 @@ Success:
 
 Success:
 - I can state the read-thread -> terminal -> renderer handoff.
+
+**Optional current-state supplements after S3**
+
+**S9A - Ordinary tmux inside Ghostty, write path to the PTY master**
+- ordinary tmux only, no control mode
+- trace `l`, then `s`, then Enter as three separate outbound writes
+- stop at the PTY-master write boundary
+
+Success:
+- I can explain why ordinary tmux inside Ghostty still uses the normal exec/PTy
+  write path.
+
+**S9B - Ordinary tmux inside Ghostty, read path from the PTY master**
+- ordinary tmux only, no control mode
+- start at PTY read, then follow `processOutput`, parser entry, and renderer
+- teach one full read -> parse -> render cycle, not every returned chunk
+
+Success:
+- I can explain why ordinary tmux output still uses the normal Ghostty
+  read/parse/render path.
 
 **S4 - Resize / SIGWINCH propagation**
 - trace one resize through apprt, surface, termio/backend, PTY, terminal, and
@@ -450,6 +500,8 @@ them in one sentence each.
 Good reasons:
 - the source shows a concept is too large for one session
 - one session would otherwise mix unrelated mental models
+- one combined session proved too noisy in practice and should be split at a
+  natural architectural seam, such as PTY write versus PTY read
 
 Do not pad the plan.
 
