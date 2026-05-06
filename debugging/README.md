@@ -3,6 +3,55 @@
 This directory is a `main`-branch, macOS-first debugging study pack for
 building a mental model of Ghostty before comparing it to tmux MVP work.
 
+## Context
+
+This study pack is intentionally built around the current `main` branch, not
+around `tmux_mvp`.
+
+The target environment is:
+
+- macOS only
+- the embedded/Swift apprt path
+- Debug builds
+- LLDB-first learning
+
+The baseline assumption is:
+
+- ordinary Ghostty architecture must be understood first
+- tmux control mode must then be understood as a hook into that architecture
+- only after that should tmux-driven surface creation or tmux MVP deltas be
+  studied
+
+Use `tmux_mvp` docs as comparison scaffolding when needed, but treat current
+branch code as the source of truth.
+
+## Problem
+
+The problem these sessions are trying to solve is not “implement tmux support
+immediately.” The problem is:
+
+> build a correct debugger-level mental model of how Ghostty already works, so
+> later tmux-control-mode work does not build on false assumptions
+
+More concretely, these sessions are designed to answer:
+
+- what threads exist per surface
+- how mailbox and wakeup handoff works
+- how input reaches the PTY write path
+- how returned bytes reach parsing and rendering
+- where tmux control mode enters the normal Ghostty output path
+- what already exists on `main`
+- what is still missing on `main`, especially the `.windows` -> app-thread GUI
+  bridge
+
+They also protect against a few common wrong mental models:
+
+- thinking the macOS app thread is the same thing as a generic Zig main loop
+- thinking ordinary tmux-in-Ghostty already uses native Ghostty child surfaces
+- thinking parser/viewer code implies the GUI bridge already exists
+- thinking one noisy LLDB stop proves more than the code and thread ownership
+  actually prove
+
 Start here:
 
 - [context.md](/Users/waqas/code/ghostty_forked/debugging/context.md)
