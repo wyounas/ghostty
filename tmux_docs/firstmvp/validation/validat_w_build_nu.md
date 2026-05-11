@@ -1,5 +1,10 @@
 # Validate With `build.nu`
 
+This is an older smoke validation for the initial window-creation path. For a
+screencast or maintainer demo of the full MVP, use
+`tmux_docs/firstmvp/validation/fullmvp_manual_validation.md` instead because it
+also proves snapshot seeding, static behavior, and read-only behavior.
+
 This file records the verified macOS validation flow using the repo's official
 build entrypoint:
 

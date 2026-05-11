@@ -77,6 +77,31 @@ Why this matters:
 
 ## 2. Build the Exact App You Will Validate
 
+First prove that you are on the branch and commit you intend to demo:
+
+```bash
+git status --short --branch
+git branch --show-current
+git rev-parse --short=10 HEAD
+```
+
+Required result:
+
+- the branch is the MVP branch you intend to validate
+- the commit is the commit you intend to show in the screencast
+- any untracked files are understood and are not part of the app build proof
+
+Now remove stale build artifacts from prior branch builds without deleting
+untracked notes or docs:
+
+```bash
+macos/build.nu --scheme Ghostty --configuration Debug --action clean
+rm -rf zig-out .zig-cache
+```
+
+Do not use `git clean -fdx` for this validation unless you have first saved all
+untracked work. It can delete local notes, docs, and debugging artifacts.
+
 Run:
 
 ```bash
@@ -88,7 +113,14 @@ macos/build.nu --scheme Ghostty --configuration Debug --action build
 
 Required result:
 
-- all four commands succeed
+- the clean commands complete
+- all four build/test commands succeed
+
+Finally prove that the app bundle you will launch was just built:
+
+```bash
+/Users/waqas/code/ghostty_forked/macos/build/Debug/Ghostty.app/Contents/MacOS/ghostty --version
+```
 
 If any command fails, stop. The MVP is not validated.
 

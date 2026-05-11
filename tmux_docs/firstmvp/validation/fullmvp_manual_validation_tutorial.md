@@ -130,12 +130,23 @@ Why:
 
 ### Step 2: build the exact app
 
-We build the Zig core, run the targeted tests, and rebuild the macOS app.
+We first show the current branch and commit, then clean stale build outputs, then
+build the Zig core, run the targeted tests, and rebuild the macOS app.
 
 Why:
 
 - the behavior we are validating lives in the current source tree
 - the app bundle must match the code we are discussing
+- old app bundles or Zig artifacts from another branch would make the demo
+  ambiguous
+
+The important detail is that we clean build outputs directly:
+
+- `macos/build.nu --scheme Ghostty --configuration Debug --action clean`
+- `rm -rf zig-out .zig-cache`
+
+We do not use `git clean -fdx` for this proof, because that can delete local
+notes and untracked docs.
 
 ### Step 3: clear stale tmux state
 
